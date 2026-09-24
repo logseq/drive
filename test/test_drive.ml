@@ -120,6 +120,8 @@ wait kind:dialog
 expect text:"dialog body"
 dismiss kind:dialog
 expect-absent kind:dialog
+change kind:radio&text:"Pick me"
+expect text:picked:true
 |}
   in
   let failures = Scenario.run (Session.driver s) src in

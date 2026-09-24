@@ -27,6 +27,7 @@ expect-absent kind:dialog            # assert node absent
 wait ext:code-editor 10              # poll until match (seconds)
 dismiss kind:dialog
 toggle kind:toggle true
+change kind:radio                     # Change (radio/select on_change)
 value kind:slider 0.5
 ext ext:web-view web-view navigated '{"url":"https://x"}'
 sleep 0.2
