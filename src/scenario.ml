@@ -30,27 +30,26 @@ exception Script_error of string
 let tokens line =
   let n = String.length line in
   let buf = Buffer.create 16 in
-  let rec next i acc =
-    if i >= n then List.rev (if Buffer.length buf > 0 then Buffer.contents buf :: acc else acc)
+  let flush acc started =
+    let tok = Buffer.contents buf in
+    Buffer.clear buf;
+    if started then tok :: acc else acc
+  in
+  let rec next i acc started =
+    if i >= n then List.rev (flush acc started)
     else
       match line.[i] with
-      | ' ' | '\t' ->
-        if Buffer.length buf > 0 then begin
-          let tok = Buffer.contents buf in
-          Buffer.clear buf;
-          next (i + 1) (tok :: acc)
-        end
-        else next (i + 1) acc
+      | ' ' | '\t' -> next (i + 1) (flush acc started) false
       | ('"' | '\'') as q ->
         let rec find j = if j >= n || line.[j] = q then j else find (j + 1) in
         let j = find (i + 1) in
         Buffer.add_string buf (String.sub line (i + 1) (j - i - 1));
-        next (min n (j + 1)) acc
+        next (min n (j + 1)) acc true
       | c ->
         Buffer.add_char buf c;
-        next (i + 1) acc
+        next (i + 1) acc true
   in
-  next 0 []
+  next 0 [] false
 
 let selector tok =
   match Model.selector_of_string tok with
