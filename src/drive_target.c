@@ -118,7 +118,13 @@ CAMLprim value drive_target_open(value pathv) {
      -output-complete-obj). RTLD_DEEPBIND makes it resolve its own
      caml_* symbols before the host executable's, so two runtimes can
      coexist in one process. */
+#ifdef __APPLE__
+  /* macOS has no RTLD_DEEPBIND; RTLD_LOCAL still keeps the bundled
+     runtime's caml_* symbols out of the host's global namespace. */
+  void *lib = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+#else
   void *lib = dlopen(path, RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+#endif
   if (lib == NULL) caml_failwith(dlerror());
   drive_target *t = calloc(1, sizeof(drive_target));
   t->lib = lib;
