@@ -83,6 +83,9 @@ let stop t = ignore (c_stop t.handle)
 let root_node t = c_root t.handle
 
 let open_target ~path ~os ~host =
+  (* The target process talks to children over pipes; a dead child's
+     write would otherwise kill the whole process via SIGPIPE. *)
+  Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   let handle = c_open path in
   let t = { handle; tree = Model.create () } in
   if c_start handle (os_code os) (host_code host) = 0 then
