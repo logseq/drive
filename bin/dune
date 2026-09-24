@@ -1,0 +1,6 @@
+(executable
+ (name main)
+ (public_name drive)
+ (package drive)
+ (modules main)
+ (libraries drive unix))

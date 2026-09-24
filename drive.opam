@@ -1,0 +1,19 @@
+opam-version: "2.0"
+synopsis: "Headless UI driver for LUI applications"
+description: "Drive mounts a real LUI app against a recording backend, replays patch ops into a queryable node tree, injects host events, and runs .drive scenario scripts. CLI dlopens any shared library exporting the lui_ocaml_* bridge ABI."
+maintainer: "Logseq"
+license: "MIT"
+depends: [
+  "ocaml" {>= "5.0"}
+  "dune" {>= "3.17"}
+  "lui"
+  "yojson"
+  "unix"
+  "threads"
+  "alcotest" {with-test}
+]
+build: [
+  ["dune" "subst"] {dev}
+  ["dune" "build" "-p" name "-j" jobs]
+  ["dune" "runtest" "-p" name "-j" jobs] {with-test}
+]

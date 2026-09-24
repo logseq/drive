@@ -1,0 +1,4 @@
+(test
+ (name test_drive)
+ (modules test_drive demo_app)
+ (libraries drive lui alcotest))
