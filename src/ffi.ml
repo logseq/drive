@@ -22,8 +22,8 @@ type t = {
   tree : Model.t;
 }
 
-let os_code = function MacOS -> 1 | IOS -> 2 | _ -> 0
-let host_code = function SwiftUIHost -> 2 | _ -> 0
+let os_code = function MacOS -> 1 | IOS -> 2 | LinuxOS -> 4 | _ -> 0
+let host_code = function SwiftUIHost -> 2 | QMLHost -> 4 | _ -> 0
 
 let wire_json = function
   | StringValue s -> `String s

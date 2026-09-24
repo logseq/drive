@@ -46,12 +46,14 @@ let () =
     match !os with
     | "macos" -> Lui_protocol.MacOS
     | "ios" -> Lui_protocol.IOS
+    | "linux" -> Lui_protocol.LinuxOS
     | "generic" -> Lui_protocol.GenericOS
     | other -> failwith ("bad --os: " ^ other)
   in
   let host_kind =
     match !host with
     | "swiftui" -> Lui_protocol.SwiftUIHost
+    | "qml" -> Lui_protocol.QMLHost
     | "generic" -> Lui_protocol.GenericHost
     | other -> failwith ("bad --host: " ^ other)
   in
