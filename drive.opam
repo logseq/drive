@@ -8,8 +8,8 @@ depends: [
   "dune" {>= "3.17"}
   "lui"
   "yojson"
-  "unix"
-  "threads"
+  "base-unix"
+  "base-threads"
   "alcotest" {with-test}
 ]
 build: [
