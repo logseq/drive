@@ -67,3 +67,18 @@ event and during `wait`).
 Events are in-memory dispatches, assertions are tree lookups. The whole
 suite in `test/` (mount + press + type + dialog + a scripted scenario)
 runs in ~1ms.
+
+## Live attach (driving a running app)
+
+Set `MENG_DRIVE_SOCKET=/path.sock` on the app before start; the app
+opens a Unix socket that replays every patch batch emitted since boot
+(one JSON object per line — the same stream the native renderer gets)
+and accepts injected events as newline JSON. Then:
+
+    drive --socket /path.sock scenario.drive
+
+Event lines look like `{"event":"press","id":37}`,
+`{"event":"text","id":22,"value":"hi"}`,
+`{"event":"ext","id":24,"ident":"web-view","name":"navigate","fields":{"url":"..."}}`.
+Because the scenario drives the *live* process, the real UI visibly
+responds — this is the mode to use for recorded demos on macOS.

@@ -7,11 +7,12 @@
    (handled here, before dlopen). *)
 
 let usage =
-  "usage: drive --lib <path> [--os macos|ios|generic] [--host swiftui|generic] \\\n\
-  \        [--env NAME=VALUE]... <scenario.drive>"
+  "usage: drive (--lib <path> [--os macos|ios|generic] [--host swiftui|generic] \\\n\
+  \        [--env NAME=VALUE]... | --socket <path>) <scenario.drive>"
 
 let () =
   let lib = ref "" in
+  let socket = ref "" in
   let os = ref "generic" in
   let host = ref "generic" in
   let env = ref [] in
@@ -23,12 +24,13 @@ let () =
   Arg.parse
     [
       ("--lib", Arg.Set_string lib, "shared library exporting lui_ocaml_* ABI");
+      ("--socket", Arg.Set_string socket, "attach to a live app's MENG_DRIVE_SOCKET");
       ("--os", Arg.Set_string os, "target os profile (default generic)");
       ("--host", Arg.Set_string host, "target host profile (default generic)");
       ("--env", Arg.String (fun kv -> env := kv :: !env), "NAME=VALUE for the target process env");
     ]
     anon usage;
-  if !lib = "" || !scenario = "" then begin
+  if (!lib = "" && !socket = "") || !scenario = "" then begin
     prerr_endline usage;
     exit 2
   end;
@@ -60,23 +62,29 @@ let () =
     close_in ic;
     s
   in
-  let target =
-    try Drive.Ffi.open_target ~path:!lib ~os:os_kind ~host:host_kind
-    with Failure msg ->
-      prerr_endline msg;
-      exit 2
+  let driver, stop =
+    if !socket <> "" then
+      let live =
+        try Drive.Live.connect ~socket_path:!socket
+        with Unix.Unix_error (e, _, _) ->
+          Printf.eprintf "drive: connect %s: %s\n" !socket
+            (Unix.error_message e);
+          exit 2
+      in
+      (Drive.Live.driver live, fun () -> ())
+    else
+      let target =
+        try Drive.Ffi.open_target ~path:!lib ~os:os_kind ~host:host_kind
+        with Failure msg ->
+          prerr_endline msg;
+          exit 2
+      in
+      (Drive.Ffi.driver target, fun () -> ignore (Drive.Ffi.stop target))
   in
-  let driver = Drive.Ffi.driver target in
-  let failures =
-    Drive.Scenario.run ~emit:print_endline
-      { Drive.Session.tree = driver.tree;
-        send_event = driver.send_event;
-        poll = driver.poll }
-      source
-  in
+  let failures = Drive.Scenario.run ~emit:print_endline driver source in
   List.iter
     (fun (f : Drive.Scenario.failure) ->
       Printf.eprintf "line %d: %s\n" f.line f.message)
     failures;
-  ignore (Drive.Ffi.stop target);
+  stop ();
   exit (if failures = [] then 0 else 1)

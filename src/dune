@@ -7,4 +7,4 @@
   (flags -fPIC))
  (library_flags -cclib -ldl)
  (libraries lui yojson unix threads.posix)
- (modules model session scenario ffi drive))
+ (modules model session scenario ffi live drive))

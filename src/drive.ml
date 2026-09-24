@@ -8,6 +8,7 @@ module Model = Model
 module Session = Session
 module Scenario = Scenario
 module Ffi = Ffi
+module Live = Live
 
 open Lui_protocol
 
