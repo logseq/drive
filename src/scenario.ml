@@ -137,6 +137,10 @@ let run_line ~emit (d : Session.driver) lineno line =
         let fields = json_to_fields (String.concat " " rest) in
         d.Session.send_event (ExtensionEvent (n.id, identifier, name, fields));
         []
+      | "change" :: sel :: _ ->
+        let n = node d (selector sel) in
+        d.Session.send_event (Change n.id);
+        []
       | "submit" :: sel :: _ ->
         let n = node d (selector sel) in
         d.Session.send_event (Submit n.id);
