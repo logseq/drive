@@ -129,6 +129,7 @@ let tap t ~x ~y =
   else
     match Model.hit_test t.tree ~frames:t.frames ~x ~y with
     | Some id ->
+      Printf.eprintf "[tap] (%.1f,%.1f) -> #%d\n%!" x y id;
       send t (`Assoc (id_fields "press" id));
       Ok id
     | None ->
