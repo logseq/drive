@@ -1,6 +1,8 @@
 (* .drive scenario DSL: line-oriented commands driving a `driver`.
      # comment
      press <sel> | tap <sel>
+     tap x y | tap-at x y       — coordinate press via host-reported
+                                  frames (live attach only)
      type <sel> "text"          — TextChanged
      key "cmd+p"                — ExtensionEvent on ext:key-surface
      ext <sel> <identifier> <name> '<json fields>'
@@ -14,6 +16,7 @@
      expect-prop <sel> <name> <value>
      sleep <seconds>
      dump
+     dump-frames                — print reported node frames
 
    <sel> = id:N | kind:name | ext:identifier | text:needle | prop:name=value
    Bare words without a prefix are treated as text: selectors. *)
@@ -98,6 +101,21 @@ let run_line ~emit (d : Session.driver) lineno line =
     let fail msg = [ { line = lineno; message = msg } ] in
     try
       match ts with
+      | ("tap" | "tap-at") :: xs :: ys :: _ -> (
+        match (float_of_string_opt xs, float_of_string_opt ys) with
+        | Some x, Some y -> (
+          match d.Session.tap ~x ~y with
+          | Ok _ -> []
+          | Error msg -> fail msg)
+        | _ ->
+          if List.hd ts = "tap-at" then fail "bad coordinates: tap-at x y"
+          else begin
+            (* `tap foo junk` keeps the old selector behaviour: extra
+               tokens are ignored. *)
+            let n = node d (selector xs) in
+            d.Session.send_event (Press n.Model.id);
+            []
+          end)
       | ("press" | "tap") :: sel :: _ ->
         let n = node d (selector sel) in
         d.Session.send_event (Press n.Model.id);
@@ -199,6 +217,16 @@ let run_line ~emit (d : Session.driver) lineno line =
         []
       | "dump" :: _ ->
         emit (Model.dump d.Session.tree);
+        []
+      | "dump-frames" :: _ ->
+        let lines =
+          List.map
+            (fun (id, (r : Model.rect)) ->
+              Printf.sprintf "#%d %.1f,%.1f %.1fx%.1f" id r.rx r.ry r.rw
+                r.rh)
+            (List.sort (fun (a, _) (b, _) -> compare a b) (d.Session.frames ()))
+        in
+        emit (if lines = [] then "(no frames reported)" else String.concat "\n" lines);
         []
       | cmd :: _ -> fail ("unknown command: " ^ cmd)
       | [] -> []

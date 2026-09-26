@@ -103,6 +103,105 @@ let test_dialog_open_dismiss () =
   Alcotest.(check bool) "dialog gone" false
     (Model.exists s.tree (Kind "dialog"))
 
+(* ---------- coordinate hit-testing ---------- *)
+
+(* Tree: 1 column > 2 button ("Increment", press-enabled)
+              > 3 text inside 2
+   Frames: column fills window, button smaller rect. *)
+let frame_tree () =
+  let m = Model.create () in
+  Model.apply_op m (CreateNode (1, Column));
+  Model.apply_op m (CreateNode (2, Button));
+  Model.apply_op m (CreateNode (3, Text));
+  Model.apply_op m (InsertChild (1, 2, 0));
+  Model.apply_op m (InsertChild (2, 3, 0));
+  Model.apply_op m (SetProp (2, PressEnabled, BoolValue true));
+  Model.apply_op m (SetProp (2, TextValue, StringValue "Increment"));
+  m
+
+let frames entries =
+  let t = Hashtbl.create 8 in
+  List.iter
+    (fun (id, rx, ry, rw, rh) ->
+      Hashtbl.replace t id { Model.rx; ry; rw; rh })
+    entries;
+  t
+
+let test_hit_deepest_wins () =
+  let m = frame_tree () in
+  let fs =
+    frames [ (1, 0.0, 0.0, 400.0, 300.0); (2, 10.0, 10.0, 100.0, 40.0);
+             (3, 12.0, 12.0, 50.0, 20.0) ]
+  in
+  (* point inside the label (3) resolves to its pressable parent (2) *)
+  Alcotest.(check (option int)) "label -> button" (Some 2)
+    (Model.hit_test m ~frames:fs ~x:15.0 ~y:15.0);
+  Alcotest.(check (option int)) "button body" (Some 2)
+    (Model.hit_test m ~frames:fs ~x:60.0 ~y:30.0)
+
+let test_hit_disabled_blocks () =
+  let m = frame_tree () in
+  Model.apply_op m (SetProp (2, Enabled, BoolValue false));
+  let fs = frames [ (1, 0.0, 0.0, 400.0, 300.0); (2, 0.0, 0.0, 100.0, 40.0) ] in
+  Alcotest.(check (option int)) "disabled swallows" None
+    (Model.hit_test m ~frames:fs ~x:20.0 ~y:20.0);
+  Alcotest.(check (option int)) "miss" None
+    (Model.hit_test m ~frames:fs ~x:500.0 ~y:500.0)
+
+(* ---------- live attach (socketpair-fed) ---------- *)
+
+let live_stub () =
+  let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  ( {
+      Live.oc = Unix.out_channel_of_descr a;
+      queue = Queue.create ();
+      mu = Mutex.create ();
+      tree = Model.create ();
+      frames = Hashtbl.create 8;
+    },
+    b )
+
+let test_live_frames_ingest () =
+  let t, peer = live_stub () in
+  Live.ingest_line t
+    {|{"frames":[[1,0,0,400,300],[2,10.5,20.0,100.0,40.0]]}|};
+  Live.ingest_line t
+    {|{"generation":1,"ops":[{"op":"create-node","id":1,"kind":"column"},
+        {"op":"create-node","id":2,"kind":"button"},
+        {"op":"insert-child","parent":1,"child":2,"index":0},
+        {"op":"set-prop","id":2,"property":"press-enabled","value":true}]}|};
+  Alcotest.(check int) "two frames" 2
+    (List.length ((Live.driver t).Session.frames ()));
+  Alcotest.(check bool) "button in tree" true
+    (Model.exists t.Live.tree (Model.Kind "button"));
+  (* tap inside the button frame sends a press for node 2 *)
+  (match Live.tap t ~x:20.0 ~y:30.0 with
+   | Ok id -> Alcotest.(check int) "hit node 2" 2 id
+   | Error msg -> Alcotest.fail msg);
+  let ic = Unix.in_channel_of_descr peer in
+  let sent = input_line ic in
+  Alcotest.(check string) "press emitted" {|{"event":"press","id":2}|}
+    sent;
+  (* frames snapshots fully replace *)
+  Live.ingest_line t {|{"frames":[[9,0,0,10,10]]}|};
+  Alcotest.(check int) "replaced" 1
+    (List.length ((Live.driver t).Session.frames ()))
+
+let test_live_tap_miss () =
+  let t, _ = live_stub () in
+  Live.ingest_line t {|{"frames":[[1,0,0,100,100]]}|};
+  Model.apply_op t.Live.tree (CreateNode (1, Column));
+  (match Live.tap t ~x:200.0 ~y:200.0 with
+   | Ok _ -> Alcotest.fail "expected miss"
+   | Error msg -> Alcotest.(check bool) "reports miss" true
+                    (String.length msg > 0));
+  let t2, _ = live_stub () in
+  match Live.tap t2 ~x:1.0 ~y:1.0 with
+  | Ok _ -> Alcotest.fail "expected frames error"
+  | Error msg ->
+    Alcotest.(check string) "no frames"
+      "no frames reported — is the host's frame reporting on?" msg
+
 (* ---------- scenario DSL ---------- *)
 
 let test_scenario_pass () =
@@ -134,6 +233,19 @@ let test_scenario_fails () =
   in
   Alcotest.(check int) "one failure" 1 (List.length failures)
 
+let test_scenario_tap_needs_live () =
+  let s = mount_demo () in
+  let failures =
+    Scenario.run (Session.driver s) "tap 10 20\n"
+  in
+  match failures with
+  | [ f ] ->
+    Alcotest.(check int) "line 1" 1 f.Scenario.line;
+    Alcotest.(check bool) "mentions live attach" true
+      (f.message
+      = "coordinate tap needs host-reported frames (live attach only)")
+  | _ -> Alcotest.fail "expected one failure"
+
 let () =
   Alcotest.run "drive"
     [
@@ -154,5 +266,20 @@ let () =
         [
           Alcotest.test_case "passing script" `Quick test_scenario_pass;
           Alcotest.test_case "failing script" `Quick test_scenario_fails;
+          Alcotest.test_case "coordinate tap needs live" `Quick
+            test_scenario_tap_needs_live;
+        ] );
+      ( "hit-test",
+        [
+          Alcotest.test_case "deepest + pressable ancestor" `Quick
+            test_hit_deepest_wins;
+          Alcotest.test_case "disabled + miss" `Quick test_hit_disabled_blocks;
+        ] );
+      ( "live",
+        [
+          Alcotest.test_case "frames ingest + tap" `Quick
+            test_live_frames_ingest;
+          Alcotest.test_case "tap miss / no frames" `Quick
+            test_live_tap_miss;
         ] );
     ]

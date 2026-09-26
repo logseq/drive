@@ -2,7 +2,13 @@
    Unix socket. The app replays every patch batch emitted since start
    (one JSON object per line) then streams live ones — the exact same
    stream the native renderer sees. Events are injected as newline JSON
-   { "event": "press", "id": N, ... }. *)
+   { "event": "press", "id": N, ... }.
+
+   Hosts that report node frames additionally interleave
+   {"frames":[[id,x,y,w,h],...]} lines (window coordinates, top-left
+   origin, full snapshot each time). Those feed [hit_test] so a
+   coordinate `tap x,y` resolves to the node a real gesture recognizer
+   would fire on. *)
 open Lui_protocol
 
 type t = {
@@ -10,6 +16,7 @@ type t = {
   queue : string Queue.t;
   mu : Mutex.t;
   tree : Model.t;
+  frames : (int, Model.rect) Hashtbl.t;
 }
 
 let connect ~socket_path =
@@ -21,6 +28,7 @@ let connect ~socket_path =
       queue = Queue.create ();
       mu = Mutex.create ();
       tree = Model.create ();
+      frames = Hashtbl.create 64;
     }
   in
   ignore
@@ -38,14 +46,35 @@ let connect ~socket_path =
        ());
   t
 
+(* One line from the socket: either a frames snapshot or a patch batch.
+   Exposed for tests — the reader thread queues raw lines and drain
+   applies them through here. *)
+let ingest_line t line =
+  let json = Yojson.Safe.from_string line in
+  match Yojson.Safe.Util.member "frames" json with
+  | `List entries ->
+    Hashtbl.reset t.frames;
+    List.iter
+      (fun entry ->
+        match entry with
+        | `List (`Int id :: rest) -> (
+          try
+            match List.map Yojson.Safe.Util.to_number rest with
+            | [ x; y; w; h ] ->
+              Hashtbl.replace t.frames id
+                { Model.rx = x; ry = y; rw = w; rh = h }
+            | _ -> ()
+          with _ -> ())
+        | _ -> ())
+      entries
+  | _ -> Model.apply_wire_batch t.tree json
+
 let drain t =
   Mutex.lock t.mu;
   let lines = List.of_seq (Queue.to_seq t.queue) in
   Queue.clear t.queue;
   Mutex.unlock t.mu;
-  List.iter
-    (fun line -> Model.apply_wire_batch t.tree (Yojson.Safe.from_string line))
-    lines;
+  List.iter (ingest_line t) lines;
   lines <> []
 
 let poll t = ignore (drain t)
@@ -90,9 +119,29 @@ let send_event t = function
          (id_fields "ext" id
          @ [ ("ident", `String ident); ("name", `String name); ("fields", fields_json) ]))
 
+(* Resolve (x, y) against the latest reported frames, then press the
+   node a gesture recognizer would fire on: deepest containing node,
+   walking ancestors to the first pressable one. *)
+let tap t ~x ~y =
+  poll t;
+  if Hashtbl.length t.frames = 0 then
+    Error "no frames reported — is the host's frame reporting on?"
+  else
+    match Model.hit_test t.tree ~frames:t.frames ~x ~y with
+    | Some id ->
+      send t (`Assoc (id_fields "press" id));
+      Ok id
+    | None ->
+      Error (Printf.sprintf "no pressable node at (%.1f, %.1f)" x y)
+
+let frames_list t =
+  Hashtbl.fold (fun id r acc -> (id, r) :: acc) t.frames []
+
 let driver t =
   {
     Session.tree = t.tree;
     send_event = (fun ev -> send_event t ev; poll t);
     poll = (fun () -> poll t);
+    tap = (fun ~x ~y -> tap t ~x ~y);
+    frames = (fun () -> frames_list t);
   }
