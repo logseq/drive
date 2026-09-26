@@ -231,18 +231,47 @@ let bool_prop t id name =
    Deepest containing node wins. *)
 let pressable_kind node = node.kind = "button"
 
+(* Preorder index over the live tree. Later siblings paint on top, so
+   this breaks equal-depth overlaps the way a real compositor does. *)
+let doc_order t =
+  let order = Hashtbl.create (Hashtbl.length t.nodes) in
+  let i = ref 0 in
+  let rec dfs id =
+    match Hashtbl.find_opt t.nodes id with
+    | Some n ->
+      incr i;
+      Hashtbl.replace order id !i;
+      List.iter dfs n.children
+    | None -> ()
+  in
+  Hashtbl.iter
+    (fun id n -> match n.parent with None -> dfs id | Some _ -> ())
+    t.nodes;
+  order
+
 let hit_test t ~frames ~x ~y =
+  let order = doc_order t in
+  let rank id =
+    match Hashtbl.find_opt order id with Some i -> i | None -> -1
+  in
   let hits =
     Hashtbl.fold
-      (fun id r acc -> if contains r x y then id :: acc else acc)
+      (fun id r acc ->
+        (* only nodes reachable from a root can be hit: a frame can
+           outlive its node between snapshots, and a stale rect must not
+           mask whatever is now behind it *)
+        if Hashtbl.mem order id && contains r x y then id :: acc else acc)
       frames []
   in
   let deepest =
     List.fold_left
       (fun best id ->
         match best with
-        | Some b when depth t b >= depth t id -> best
-        | _ -> Some id)
+        | None -> Some id
+        | Some b ->
+          let db = depth t b and di = depth t id in
+          if di > db || (di = db && rank id > rank b) then Some id
+          else best)
       None hits
   in
   let rec pressable id =
