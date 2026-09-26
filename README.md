@@ -97,9 +97,11 @@ socket:
                                     # full snapshot (replaces the table)
 
 A `tap` resolves the deepest node containing the point, then walks
-ancestors to the first `press-enabled` node (an `enabled=false` hit
-swallows the tap, like a real disabled control), and emits a normal
-`press` for it. Works on any host that reports frames — SwiftUI and
-Flutter backends can stream them; anything DOM-based can use
+ancestors to the first `press-enabled` node or `button` (an
+`enabled=false` hit swallows the tap, like a real disabled control), and
+emits a normal `press` for it. `tap <sel>` is shorthand for tapping the
+center of the node's reported frame — so `dump-frames` + `tap` needs no
+hand-picked coordinates. Works on any host that reports frames — SwiftUI
+and Flutter backends can stream them; anything DOM-based can use
 `elementFromPoint`-equivalent bookkeeping. In-process and FFI drivers
-reject `tap` since no geometry exists there.
+reject `tap x y` and degrade `tap <sel>` to a plain press.

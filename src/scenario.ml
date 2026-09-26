@@ -1,6 +1,7 @@
 (* .drive scenario DSL: line-oriented commands driving a `driver`.
      # comment
-     press <sel> | tap <sel>
+     press <sel> | tap <sel>    — tap <sel> hits the node's reported
+                                  frame center when frames exist
      tap x y | tap-at x y       — coordinate press via host-reported
                                   frames (live attach only)
      type <sel> "text"          — TextChanged
@@ -93,6 +94,22 @@ let wait_for (d : Session.driver) sel timeout =
   in
   loop ()
 
+(* `tap <sel>` prefers the node's reported frame center, so scripts
+   verify real geometry instead of just event routing; without frames
+   (in-process/ffi drivers) it degrades to a plain press. *)
+let tap_selector d fail sel =
+  let n = node d (selector sel) in
+  match List.assoc_opt n.Model.id (d.Session.frames ()) with
+  | Some (r : Model.rect) -> (
+    let x = r.Model.rx +. (r.Model.rw /. 2.0) in
+    let y = r.Model.ry +. (r.Model.rh /. 2.0) in
+    match d.Session.tap ~x ~y with
+    | Ok _ -> []
+    | Error msg -> fail msg)
+  | None ->
+    d.Session.send_event (Press n.Model.id);
+    []
+
 let run_line ~emit (d : Session.driver) lineno line =
   let line = String.trim line in
   if line = "" || line.[0] = '#' then []
@@ -109,17 +126,14 @@ let run_line ~emit (d : Session.driver) lineno line =
           | Error msg -> fail msg)
         | _ ->
           if List.hd ts = "tap-at" then fail "bad coordinates: tap-at x y"
-          else begin
-            (* `tap foo junk` keeps the old selector behaviour: extra
-               tokens are ignored. *)
-            let n = node d (selector xs) in
-            d.Session.send_event (Press n.Model.id);
-            []
-          end)
+          else tap_selector d fail xs)
       | ("press" | "tap") :: sel :: _ ->
-        let n = node d (selector sel) in
-        d.Session.send_event (Press n.Model.id);
-        []
+        if List.hd ts = "tap" then tap_selector d fail sel
+        else begin
+          let n = node d (selector sel) in
+          d.Session.send_event (Press n.Model.id);
+          []
+        end
       | "long-press" :: sel :: _ ->
         let n = node d (selector sel) in
         d.Session.send_event (LongPress n.id);
