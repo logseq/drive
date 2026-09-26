@@ -199,6 +199,71 @@ let children t id = match Hashtbl.find_opt t.nodes id with
   | Some n -> List.filter_map (fun c -> Hashtbl.find_opt t.nodes c) n.children
   | None -> []
 
+(* ---------- coordinate hit-testing (live attach) ---------- *)
+
+(* A host-reported frame: node id -> rect in window/scene coordinates
+   (points, top-left origin). Hosts report the full map on each layout
+   flush, so stale ids disappear on replace. *)
+type rect = { rx : float; ry : float; rw : float; rh : float }
+
+let contains { rx; ry; rw; rh } x y =
+  rw > 0.0 && rh > 0.0 && x >= rx && x < rx +. rw && y >= ry
+  && y < ry +. rh
+
+let rec depth t id =
+  match Hashtbl.find_opt t.nodes id with
+  | Some { parent = Some p; _ } -> 1 + depth t p
+  | _ -> 0
+
+let parent_of t id =
+  match Hashtbl.find_opt t.nodes id with
+  | Some { parent = Some p; _ } -> Some p
+  | _ -> None
+
+let bool_prop t id name =
+  match prop t id name with
+  | Some (BoolValue b) -> Some b
+  | _ -> None
+
+(* A node is tap-able when it (or an ancestor — a real gesture recognizer
+   on a button fires for taps on its label) has press-enabled=true or is
+   an inherently pressable control kind, and is not enabled=false.
+   Deepest containing node wins. *)
+let pressable_kind node = node.kind = "button"
+
+let hit_test t ~frames ~x ~y =
+  let hits =
+    Hashtbl.fold
+      (fun id r acc -> if contains r x y then id :: acc else acc)
+      frames []
+  in
+  let deepest =
+    List.fold_left
+      (fun best id ->
+        match best with
+        | Some b when depth t b >= depth t id -> best
+        | _ -> Some id)
+      None hits
+  in
+  let rec pressable id =
+    if bool_prop t id "enabled" = Some false then None
+    else if
+      bool_prop t id "press-enabled" = Some true
+      ||
+      match Hashtbl.find_opt t.nodes id with
+      | Some n -> pressable_kind n
+      | None -> false
+    then Some id
+    else
+      match parent_of t id with
+      | Some p -> pressable p
+      | None -> None
+  in
+  match deepest with
+  | Some id -> pressable id
+  | None -> None
+
+
 let string_of_wire_value = function
   | StringValue s -> Printf.sprintf "%S" s
   | BoolValue b -> string_of_bool b

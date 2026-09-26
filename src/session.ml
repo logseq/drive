@@ -6,12 +6,22 @@
 open Lui_protocol
 
 (* Minimal driver surface shared by the in-process session and the FFI
-   target: scenarios only need these three. *)
+   target: scenarios only need these. [tap] injects a coordinate-space
+   press resolved against host-reported frames — only live attach has
+   them; other drivers report an error. [frames] exposes the latest
+   reported frames for `dump-frames`. *)
 type driver = {
   tree : Model.t;
   send_event : event -> unit;
   poll : unit -> unit;
+  tap : x:float -> y:float -> (int, string) result;
+  frames : unit -> (int * Model.rect) list;
 }
+
+let no_frames () = []
+
+let tap_unsupported ~x:_ ~y:_ =
+  Error "coordinate tap needs host-reported frames (live attach only)"
 
 type ('model, 'action) t = {
   app : ('model, 'action) Lui_app.reducer_app;
@@ -61,7 +71,14 @@ let extension_event s ~node ~identifier ~name ~fields =
 let read_model s = Lui_app.model s.app
 let root_node s = Lui_app.root_node s.app
 
-let driver s = { tree = s.tree; send_event = (fun ev -> dispatch s ev); poll = (fun () -> poll s) }
+let driver s =
+  {
+    tree = s.tree;
+    send_event = (fun ev -> dispatch s ev);
+    poll = (fun () -> poll s);
+    tap = tap_unsupported;
+    frames = no_frames;
+  }
 
 let dispose s = ignore (Lui_app.dispose s.app)
 

@@ -98,4 +98,10 @@ let open_target ~path ~os ~host =
   t
 
 let driver t =
-  { Session.tree = t.tree; send_event = (fun ev -> send_event t ev); poll = (fun () -> (ignore (poll t) : unit)) }
+  {
+    Session.tree = t.tree;
+    send_event = (fun ev -> send_event t ev);
+    poll = (fun () -> (ignore (poll t) : unit));
+    tap = Session.tap_unsupported;
+    frames = Session.no_frames;
+  }

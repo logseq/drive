@@ -30,8 +30,10 @@ toggle kind:toggle true
 change kind:radio                     # Change (radio/select on_change)
 value kind:slider 0.5
 ext ext:web-view web-view navigated '{"url":"https://x"}'
+tap 142 36                            # coordinate press (live attach only)
 sleep 0.2
 dump                                 # print the node tree
+dump-frames                          # print host-reported node frames
 poll                                 # drain async actions once
 ```
 
@@ -83,3 +85,21 @@ Event lines look like `{"event":"press","id":37}`,
 `{"event":"ext","id":24,"ident":"web-view","name":"navigate","fields":{"url":"..."}}`.
 Because the scenario drives the *live* process, the real UI visibly
 responds — this is the mode to use for recorded demos on macOS.
+
+## Coordinate taps (`tap x y`)
+
+Selector events target a node id directly; `tap x y` instead resolves
+the node at a point — the closest thing to a real gesture recognizer
+firing. Hosts that support it interleave a frames snapshot on the same
+socket:
+
+    {"frames":[[id,x,y,w,h], ...]}   # window coords, top-left origin,
+                                    # full snapshot (replaces the table)
+
+A `tap` resolves the deepest node containing the point, then walks
+ancestors to the first `press-enabled` node (an `enabled=false` hit
+swallows the tap, like a real disabled control), and emits a normal
+`press` for it. Works on any host that reports frames — SwiftUI and
+Flutter backends can stream them; anything DOM-based can use
+`elementFromPoint`-equivalent bookkeeping. In-process and FFI drivers
+reject `tap` since no geometry exists there.
