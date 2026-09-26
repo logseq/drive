@@ -99,6 +99,7 @@ let wait_for (d : Session.driver) sel timeout =
    (in-process/ffi drivers) it degrades to a plain press. *)
 let tap_selector d fail sel =
   let n = node d (selector sel) in
+  d.Session.poll ();
   match List.assoc_opt n.Model.id (d.Session.frames ()) with
   | Some (r : Model.rect) -> (
     let x = r.Model.rx +. (r.Model.rw /. 2.0) in
