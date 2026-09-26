@@ -148,6 +148,27 @@ let test_hit_disabled_blocks () =
   Alcotest.(check (option int)) "miss" None
     (Model.hit_test m ~frames:fs ~x:500.0 ~y:500.0)
 
+let test_hit_overlap_and_stale () =
+  let m = Model.create () in
+  Model.apply_op m (CreateNode (1, Column));
+  Model.apply_op m (CreateNode (2, Button));
+  Model.apply_op m (CreateNode (3, Button));
+  Model.apply_op m (InsertChild (1, 2, 0));
+  Model.apply_op m (InsertChild (1, 3, 1));
+  (* 2 and 3 overlap at the same depth; 3 is later in document order and
+     paints on top, so it wins the contested point *)
+  let fs =
+    frames [ (1, 0.0, 0.0, 400.0, 300.0); (2, 10.0, 10.0, 100.0, 40.0);
+             (3, 50.0, 10.0, 100.0, 40.0) ]
+  in
+  Alcotest.(check (option int)) "later sibling on top" (Some 3)
+    (Model.hit_test m ~frames:fs ~x:60.0 ~y:30.0);
+  (* node 3 is gone from the tree but its frame lingers between
+     snapshots: it must not mask node 2 behind it *)
+  Model.apply_op m (DropNode 3);
+  Alcotest.(check (option int)) "stale frame ignored" (Some 2)
+    (Model.hit_test m ~frames:fs ~x:60.0 ~y:30.0)
+
 (* ---------- live attach (socketpair-fed) ---------- *)
 
 let live_stub () =
@@ -274,6 +295,8 @@ let () =
           Alcotest.test_case "deepest + pressable ancestor" `Quick
             test_hit_deepest_wins;
           Alcotest.test_case "disabled + miss" `Quick test_hit_disabled_blocks;
+          Alcotest.test_case "overlap order + stale frame" `Quick
+            test_hit_overlap_and_stale;
         ] );
       ( "live",
         [
