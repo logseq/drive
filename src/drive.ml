@@ -9,6 +9,7 @@ module Session = Session
 module Scenario = Scenario
 module Ffi = Ffi
 module Live = Live
+module Ws = Ws
 
 open Lui_protocol
 

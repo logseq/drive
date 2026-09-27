@@ -8,11 +8,13 @@
 
 let usage =
   "usage: drive (--lib <path> [--os macos|ios|generic] [--host swiftui|generic] \\\n\
-  \        [--env NAME=VALUE]... | --socket <path>) <scenario.drive>"
+  \        [--env NAME=VALUE]... | --socket <path> | --ws-listen <port>) \\\n\
+  \        <scenario.drive>"
 
 let () =
   let lib = ref "" in
   let socket = ref "" in
+  let ws_listen = ref 0 in
   let os = ref "generic" in
   let host = ref "generic" in
   let env = ref [] in
@@ -25,12 +27,15 @@ let () =
     [
       ("--lib", Arg.Set_string lib, "shared library exporting lui_ocaml_* ABI");
       ("--socket", Arg.Set_string socket, "attach to a live app's MENG_DRIVE_SOCKET");
+      ( "--ws-listen",
+        Arg.Set_int ws_listen,
+        "PORT  accept a WebSocket host attach (web: page dials out to drive)" );
       ("--os", Arg.Set_string os, "target os profile (default generic)");
       ("--host", Arg.Set_string host, "target host profile (default generic)");
       ("--env", Arg.String (fun kv -> env := kv :: !env), "NAME=VALUE for the target process env");
     ]
     anon usage;
-  if (!lib = "" && !socket = "") || !scenario = "" then begin
+  if (!lib = "" && !socket = "" && !ws_listen = 0) || !scenario = "" then begin
     prerr_endline usage;
     exit 2
   end;
@@ -71,6 +76,19 @@ let () =
         with Unix.Unix_error (e, _, _) ->
           Printf.eprintf "drive: connect %s: %s\n" !socket
             (Unix.error_message e);
+          exit 2
+      in
+      (Drive.Live.driver live, fun () -> ())
+    else if !ws_listen <> 0 then
+      let live =
+        try Drive.Live.listen_ws ~port:!ws_listen
+        with
+        | Unix.Unix_error (e, _, _) ->
+          Printf.eprintf "drive: ws-listen %d: %s\n" !ws_listen
+            (Unix.error_message e);
+          exit 2
+        | Failure msg ->
+          Printf.eprintf "drive: ws-listen %d: %s\n" !ws_listen msg;
           exit 2
       in
       (Drive.Live.driver live, fun () -> ())

@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>drive web demo</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 40px; color: #222; }
+  .row { padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px;
+         margin-bottom: 8px; cursor: pointer; user-select: none; }
+  .row:hover { background: #f5f5f5; }
+  button { padding: 10px 18px; border-radius: 8px; border: 1px solid #bbb;
+           background: #fff; font-size: 14px; cursor: pointer; }
+  #status { margin-top: 20px; padding: 10px; background: #fafafa;
+            border-radius: 6px; min-height: 20px; }
+  .warn { color: #a15c00; }
+  #opened { color: #0a7; }
+</style>
+</head>
+<body>
+
+<h1 data-lui-node-id="1" data-lui-kind="column">drive web demo</h1>
+
+<div data-lui-node-id="10" data-lui-kind="column">
+  <div class="row" id="file-test-ml" data-lui-node-id="17" data-lui-kind="list-item" data-lui-press-enabled>test.ml</div>
+  <div class="row" data-lui-node-id="18" data-lui-kind="list-item" data-lui-press-enabled>README.md</div>
+</div>
+
+<div id="opened" data-lui-node-id="20" data-lui-kind="text"></div>
+
+<div style="margin-top:16px">
+  <button id="capture" data-lui-node-id="40" data-lui-kind="button">Capture</button>
+  <button id="disabled" disabled data-lui-node-id="42" data-lui-kind="button"
+          data-lui-enabled="false">Disabled</button>
+</div>
+
+<div id="status" data-lui-node-id="41" data-lui-kind="text"
+     data-lui-text="idle">idle</div>
+
+<script src="lui-drive.js"></script>
+<script>
+  // Host-side "reducer": real DOM handlers — drive's taps land as real
+  // clicks here.
+  document.getElementById('capture').addEventListener('click', () => {
+    const s = document.getElementById('status');
+    s.textContent = '[warn] nothing to capture';
+    s.className = 'warn';
+    s.dataset.luiText = '[warn] nothing to capture';
+  });
+  document.getElementById('file-test-ml').addEventListener('click', () => {
+    document.getElementById('opened').textContent = 'opened: test.ml';
+    document.getElementById('opened').dataset.luiText = 'opened: test.ml';
+  });
+</script>
+</body>
+</html>

@@ -12,19 +12,29 @@
 open Lui_protocol
 
 type t = {
-  oc : out_channel;
+  send_line : string -> unit;
   queue : string Queue.t;
   mu : Mutex.t;
   tree : Model.t;
   frames : (int, Model.rect) Hashtbl.t;
 }
 
+let enqueue t line =
+  Mutex.lock t.mu;
+  Queue.add line t.queue;
+  Mutex.unlock t.mu
+
 let connect ~socket_path =
   let sock = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
   Unix.connect sock (Unix.ADDR_UNIX socket_path);
+  let oc = Unix.out_channel_of_descr sock in
   let t =
     {
-      oc = Unix.out_channel_of_descr sock;
+      send_line =
+        (fun s ->
+          output_string oc s;
+          output_char oc '\n';
+          flush oc);
       queue = Queue.create ();
       mu = Mutex.create ();
       tree = Model.create ();
@@ -37,11 +47,56 @@ let connect ~socket_path =
           let ic = Unix.in_channel_of_descr sock in
           try
             while true do
-              let line = input_line ic in
-              Mutex.lock t.mu;
-              Queue.add line t.queue;
-              Mutex.unlock t.mu
+              enqueue t (input_line ic)
             done
+          with _ -> ())
+       ());
+  t
+
+(* Browser hosts cannot accept connections, so for web attach the page
+   dials out: `drive --ws-listen <port>` accepts a WebSocket and speaks
+   the same line protocol (each text message = one line). *)
+let listen_ws ~port =
+  let srv = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Unix.setsockopt srv Unix.SO_REUSEADDR true;
+  Unix.bind srv (Unix.ADDR_INET (Unix.inet_addr_loopback, port));
+  Unix.listen srv 1;
+  Printf.eprintf
+    "drive: ws listening on 127.0.0.1:%d — open the host page with\n\
+     drive:   ?drive=ws://127.0.0.1:%d\n%!"
+    port port;
+  let conn, _ = Unix.accept srv in
+  Unix.close srv;
+  Unix.setsockopt conn Unix.TCP_NODELAY true;
+  let ic = Unix.in_channel_of_descr conn
+  and oc = Unix.out_channel_of_descr conn in
+  if not (Ws.accept_handshake ic oc) then
+    failwith "drive: bad websocket handshake";
+  let t =
+    {
+      send_line = (fun s -> Ws.write_frame oc s);
+      queue = Queue.create ();
+      mu = Mutex.create ();
+      tree = Model.create ();
+      frames = Hashtbl.create 64;
+    }
+  in
+  ignore
+    (Thread.create
+       (fun () ->
+          try
+            let rec loop () =
+              match Ws.read_frame ic with
+              | `Text line ->
+                enqueue t line;
+                loop ()
+              | `Ping payload ->
+                Ws.write_frame oc ~opcode:10 payload;
+                loop ()
+              | `Pong | `Skip -> loop ()
+              | `Close | `Eof -> ()
+            in
+            loop ()
           with _ -> ())
        ());
   t
@@ -79,10 +134,7 @@ let drain t =
 
 let poll t = ignore (drain t)
 
-let send t json =
-  output_string t.oc (Yojson.Safe.to_string json);
-  output_char t.oc '\n';
-  flush t.oc
+let send t json = t.send_line (Yojson.Safe.to_string json)
 
 let wire_to_json = function
   | StringValue s -> `String s
