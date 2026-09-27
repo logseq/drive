@@ -42,7 +42,14 @@ const LuiDrive = (() => {
     const ops = [];
     const visit = (el) => {
       const id = parseInt(el.dataset.luiNodeId, 10);
-      const kind = el.dataset.luiKind || el.tagName.toLowerCase();
+      // data-lui-kind wins (backends report e.g. "lui-button"); fall
+      // back to a lui-* class or the tag name.
+      const kind =
+        (el.dataset.luiKind || "")
+          .split(/\s+/)[0]
+          .replace(/^lui-/, "") ||
+        ((el.className.match(/\blui-(\S+)/) || [])[1] ||
+          el.tagName.toLowerCase());
       ops.push({ op: "create-node", id, kind });
       const setProp = (property, value) =>
         ops.push({ op: "set-prop", id, property, value });
@@ -109,11 +116,16 @@ const LuiDrive = (() => {
           new MouseEvent("contextmenu", { bubbles: true })
         );
         break;
-      case "text":
-        el.focus();
-        el.value = msg.value ?? "";
-        el.dispatchEvent(new Event("input", { bubbles: true }));
+      case "text": {
+        const input = el.matches("input,textarea")
+          ? el
+          : el.querySelector("input,textarea");
+        if (!input) break;
+        input.focus();
+        input.value = msg.value ?? "";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
         break;
+      }
       case "key":
         el.dispatchEvent(
           new KeyboardEvent("keydown", { key: msg.value, bubbles: true })
@@ -126,6 +138,9 @@ const LuiDrive = (() => {
 
   function attach(url) {
     if (ws) return ws;
+    // Let the host backend know a drive client is attached before the
+    // app mounts, so it can tag DOM nodes (see web.cljc tag-drive-nodes!).
+    window.luiDrive = true;
     ws = new WebSocket(url);
     let observer = null;
     const teardown = () => {
@@ -155,7 +170,10 @@ const LuiDrive = (() => {
         dispatchEvent(JSON.parse(e.data));
       } catch (_) {}
     };
-    ws.onclose = teardown;
+    ws.onclose = () => {
+      teardown();
+      window.luiDrive = undefined;
+    };
     ws.onerror = () => ws.close();
     return ws;
   }
