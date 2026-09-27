@@ -105,3 +105,23 @@ hand-picked coordinates. Works on any host that reports frames — SwiftUI
 and Flutter backends can stream them; anything DOM-based can use
 `elementFromPoint`-equivalent bookkeeping. In-process and FFI drivers
 reject `tap x y` and degrade `tap <sel>` to a plain press.
+
+## Web attach (`--ws-listen`)
+
+Browser pages can only dial out, so for web hosts the direction
+inverts: drive listens, the page connects.
+
+    drive --ws-listen 9222 scenario.drive
+
+then open the host page with `?drive=ws://127.0.0.1:9222` (or call
+`LuiDrive.attach(url)` from `web/lui-drive.js`). The page speaks the
+same line protocol over a WebSocket — one text message per JSON line.
+
+`web/lui-drive.js` is the reference host adapter: elements tagged
+`data-lui-node-id`/`data-lui-kind` are reported as the node tree,
+`getBoundingClientRect()` feeds the frames snapshots, and incoming
+events are replayed as real DOM events (`press` → `el.click()`), so the
+page's own handlers run exactly as a user gesture would. Everything is
+gated on a live connection — without `?drive=` the file registers no
+observers, listeners, or timers, so it costs nothing on a page that
+isn't being driven. See `web/demo.html` for a runnable target.

@@ -173,8 +173,13 @@ let test_hit_overlap_and_stale () =
 
 let live_stub () =
   let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  let oc = Unix.out_channel_of_descr a in
   ( {
-      Live.oc = Unix.out_channel_of_descr a;
+      Live.send_line =
+        (fun s ->
+          output_string oc s;
+          output_char oc '\n';
+          flush oc);
       queue = Queue.create ();
       mu = Mutex.create ();
       tree = Model.create ();
@@ -267,6 +272,41 @@ let test_scenario_tap_needs_live () =
       = "coordinate tap needs host-reported frames (live attach only)")
   | _ -> Alcotest.fail "expected one failure"
 
+(* ---------- websocket ---------- *)
+
+let test_ws_accept_key () =
+  (* RFC 6455 section 1.3 example *)
+  Alcotest.(check string)
+    "accept key" "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    (Drive.Ws.base64
+       (Drive.Ws.sha1
+          ("dGhlIHNhbXBsZSBub25jZQ==" ^ Drive.Ws.websocket_guid)))
+
+let test_ws_frame_codec () =
+  let r, w = Unix.pipe () in
+  let ic = Unix.in_channel_of_descr r
+  and oc = Unix.out_channel_of_descr w in
+  (* a masked client text frame "hello" *)
+  let mask = "\x01\x02\x03\x04" in
+  let masked =
+    String.init 5 (fun i ->
+        Char.chr (Char.code "hello".[i] lxor Char.code mask.[i mod 4]))
+  in
+  output_char oc '\x81';
+  output_char oc (Char.chr (0x80 lor 5));
+  output_string oc mask;
+  output_string oc masked;
+  flush oc;
+  (match Drive.Ws.read_frame ic with
+   | `Text s -> Alcotest.(check string) "payload" "hello" s
+   | _ -> Alcotest.fail "expected text frame");
+  (* server frames go out unmasked with fin+opcode in byte 0 *)
+  Drive.Ws.write_frame oc "hi";
+  Alcotest.(check string)
+    "server frame" "\x81\x02hi" (really_input_string ic 4);
+  Unix.close r;
+  Unix.close w
+
 let () =
   Alcotest.run "drive"
     [
@@ -304,5 +344,10 @@ let () =
             test_live_frames_ingest;
           Alcotest.test_case "tap miss / no frames" `Quick
             test_live_tap_miss;
+        ] );
+      ( "ws",
+        [
+          Alcotest.test_case "accept key (rfc)" `Quick test_ws_accept_key;
+          Alcotest.test_case "frame codec" `Quick test_ws_frame_codec;
         ] );
     ]
