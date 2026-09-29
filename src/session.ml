@@ -16,6 +16,9 @@ type driver = {
   poll : unit -> unit;
   tap : x:float -> y:float -> (int, string) result;
   frames : unit -> (int * Model.rect) list;
+  (* live attach only: ask the host page to navigate (location.hash).
+     In-process drivers have no location; this is a no-op there. *)
+  send_nav : string -> unit;
 }
 
 let no_frames () = []
@@ -78,6 +81,7 @@ let driver s =
     poll = (fun () -> poll s);
     tap = tap_unsupported;
     frames = no_frames;
+    send_nav = (fun _ -> ());
   }
 
 let dispose s = ignore (Lui_app.dispose s.app)

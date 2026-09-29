@@ -34,7 +34,10 @@ let test_selector_parse () =
     (selector_of_string "text:\"hello world\"" = Some (Text "hello world"));
   Alcotest.(check bool) "prop" true
     (selector_of_string "prop:placeholder=Search"
-    = Some (Prop ("placeholder", StringValue "Search")))
+    = Some (Prop ("placeholder", StringValue "Search")));
+  Alcotest.(check bool) "prop prefix" true
+    (selector_of_string "prop:id=block-content-*"
+    = Some (PropPrefix ("id", "block-content-")))
 
 let test_wire_batch () =
   let m = Model.create () in
@@ -54,6 +57,10 @@ let test_wire_batch () =
   Alcotest.(check bool) "extension" true (Model.exists m (Ext "web-view"));
   Alcotest.(check bool) "prop" true
     (Model.exists m (Prop ("placeholder", StringValue "Search")));
+  Alcotest.(check bool) "prop prefix hit" true
+    (Model.exists m (PropPrefix ("placeholder", "Sea")));
+  Alcotest.(check bool) "prop prefix miss" false
+    (Model.exists m (PropPrefix ("placeholder", "rch")));
   Alcotest.(check int) "generation" 3 (Model.generation m)
 
 (* ---------- in-process session ---------- *)
@@ -298,8 +305,33 @@ let test_ws_frame_codec () =
   output_string oc masked;
   flush oc;
   (match Drive.Ws.read_frame ic with
-   | `Text s -> Alcotest.(check string) "payload" "hello" s
+   | `Text (s, fin) ->
+     Alcotest.(check string) "payload" "hello" s;
+     Alcotest.(check bool) "fin" true fin
    | _ -> Alcotest.fail "expected text frame");
+  (* fragmented text: fin=0 text frame + continuation reassembles *)
+  output_char oc '\x01';
+  output_char oc (Char.chr (0x80 lor 3));
+  output_string oc mask;
+  output_string oc (String.sub masked 0 3);
+  output_char oc '\x80';
+  output_char oc (Char.chr (0x80 lor 2));
+  output_string oc mask;
+  (* each frame's mask restarts at offset 0 *)
+  output_string oc
+    (String.init 2 (fun i ->
+         Char.chr (Char.code "lo".[i] lxor Char.code mask.[i])));
+  flush oc;
+  (match Drive.Ws.read_frame ic with
+   | `Text (s, fin) ->
+     Alcotest.(check string) "fragment head" "hel" s;
+     Alcotest.(check bool) "fin" false fin
+   | _ -> Alcotest.fail "expected fragment head");
+  (match Drive.Ws.read_frame ic with
+   | `Cont (s, fin) ->
+     Alcotest.(check string) "fragment tail" "lo" s;
+     Alcotest.(check bool) "fin" true fin
+   | _ -> Alcotest.fail "expected continuation");
   (* server frames go out unmasked with fin+opcode in byte 0 *)
   Drive.Ws.write_frame oc "hi";
   Alcotest.(check string)

@@ -5,7 +5,9 @@
      tap x y | tap-at x y       — coordinate press via host-reported
                                   frames (live attach only)
      type <sel> "text"          — TextChanged
-     key "cmd+p"                — ExtensionEvent on ext:key-surface
+     key "cmd+p"                — ExtensionEvent on ext:key-surface (falls
+                                  back to a document-level key on live
+                                  attach when no key-surface node exists)
      ext <sel> <identifier> <name> '<json fields>'
      submit|dismiss|appear|long-press|double-press <sel>
      toggle <sel> true|false
@@ -151,7 +153,12 @@ let run_line ~emit (d : Session.driver) lineno line =
         let surface =
           match Model.first d.Session.tree (Ext "key-surface") with
           | Some n -> n
-          | None -> raise (Script_error "no key-surface node")
+          (* live web attach has no key-surface node; id 0 is the
+             adapter's document-level fallback (a real DOM keydown
+             that reaches capture listeners on document) *)
+          | None ->
+            { Model.id = 0; kind = ""; props = Hashtbl.create 0
+            ; children = []; parent = None }
         in
         let parts = String.split_on_char '+' combo in
         let mods, key =
@@ -195,6 +202,11 @@ let run_line ~emit (d : Session.driver) lineno line =
         []
       | "poll" :: _ ->
         d.Session.poll ();
+        []
+      | "goto" :: hash :: _ ->
+        (* live attach only: the host adapter sets location.hash so the
+           app's own hashchange router resolves the route *)
+        d.Session.send_nav hash;
         []
       | ("wait" | "expect") :: sel :: rest ->
         let timeout =

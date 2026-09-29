@@ -85,10 +85,26 @@ let listen_ws ~port =
     (Thread.create
        (fun () ->
           try
+            let frags = Buffer.create 4096 in
             let rec loop () =
               match Ws.read_frame ic with
-              | `Text line ->
-                enqueue t line;
+              | `Text (payload, true) ->
+                if Buffer.length frags = 0 then enqueue t payload
+                else begin
+                  Buffer.add_string frags payload;
+                  enqueue t (Buffer.contents frags);
+                  Buffer.clear frags
+                end;
+                loop ()
+              | `Text (payload, false) ->
+                Buffer.add_string frags payload;
+                loop ()
+              | `Cont (payload, fin) ->
+                Buffer.add_string frags payload;
+                if fin then begin
+                  enqueue t (Buffer.contents frags);
+                  Buffer.clear frags
+                end;
                 loop ()
               | `Ping payload ->
                 Ws.write_frame oc ~opcode:10 payload;
@@ -136,6 +152,9 @@ let poll t = ignore (drain t)
 
 let send t json = t.send_line (Yojson.Safe.to_string json)
 
+let send_nav t hash =
+  send t (`Assoc [ ("event", `String "nav"); ("hash", `String hash) ])
+
 let wire_to_json = function
   | StringValue s -> `String s
   | BoolValue b -> `Bool b
@@ -158,6 +177,20 @@ let send_event t = function
     send t (`Assoc (id_fields "toggle" id @ [ ("value", `Bool value) ]))
   | ValueChanged (id, value) ->
     send t (`Assoc (id_fields "value" id @ [ ("value", `Float value) ]))
+  | ScrollCompleted (id, offset, direction) ->
+    send
+      t
+      (`Assoc
+        (id_fields "scroll-completed" id
+        @ [ ("offset", `Int offset); ("direction", `String direction) ]))
+  | VisibleRange (id, first, last) ->
+    send
+      t
+      (`Assoc
+        (id_fields "visible-range" id
+        @ [ ("first", `Int first); ("last", `Int last) ]))
+  | Picked (id, value) ->
+    send t (`Assoc (id_fields "picked" id @ [ ("value", `String value) ]))
   | ExtensionEvent (id, ident, name, fields) ->
     let fields_json =
       `Assoc
@@ -197,4 +230,5 @@ let driver t =
     poll = (fun () -> poll t);
     tap = (fun ~x ~y -> tap t ~x ~y);
     frames = (fun () -> frames_list t);
+    send_nav = (fun h -> send_nav t h);
   }
