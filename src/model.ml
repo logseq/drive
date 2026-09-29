@@ -148,6 +148,7 @@ type selector =
   | Ext of string (* extension identifier *)
   | Text of string (* any string prop containing the needle *)
   | Prop of string * wire_value
+  | PropPrefix of string * string (* prop:name=prefix* — trailing star *)
   | All of selector list (* conjunction: kind:button&text:Save *)
 
 let all_nodes t =
@@ -185,6 +186,12 @@ let rec matches node = function
     match Hashtbl.find_opt node.props name with
     | Some v' -> v' = v
     | None -> false)
+  | PropPrefix (name, prefix) -> (
+    match Hashtbl.find_opt node.props name with
+    | Some (StringValue s) ->
+      let ls = String.length s and lp = String.length prefix in
+      lp <= ls && String.sub s 0 lp = prefix
+    | _ -> false)
   | All sels -> List.for_all (matches node) sels
 
 let find t sel = List.filter (fun n -> matches n sel) (all_nodes t)
@@ -365,6 +372,9 @@ and selector_one s =
        | Some j ->
          let name = String.sub rest 0 j in
          let v = String.sub rest (j + 1) (String.length rest - j - 1) |> unquote in
-         Some (Prop (name, StringValue v))
+         let n = String.length v in
+         if n > 0 && v.[n - 1] = '*' then
+           Some (PropPrefix (name, String.sub v 0 (n - 1)))
+         else Some (Prop (name, StringValue v))
        | None -> None)
      | _ -> None)

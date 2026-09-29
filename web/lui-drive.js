@@ -25,6 +25,10 @@
 const LuiDrive = (() => {
   let ws = null;
   let rafPending = false;
+  // ids reported in the previous tree snapshot — DOM nodes removed
+  // since then need drop-node ops or they stay as stale orphans in
+  // drive's model (expect-absent would give false negatives).
+  let lastIds = new Set();
 
   const nodeEl = (id) =>
     document.querySelector(`[data-lui-node-id="${id}"]`);
@@ -40,8 +44,10 @@ const LuiDrive = (() => {
   // Emit the node's tree as one wire batch (create/set-prop/insert-child).
   function sendTree() {
     const ops = [];
+    const seen = new Set();
     const visit = (el) => {
       const id = parseInt(el.dataset.luiNodeId, 10);
+      seen.add(id);
       // data-lui-kind wins (backends report e.g. "lui-button"); fall
       // back to a lui-* class or the tag name.
       const kind =
@@ -55,6 +61,12 @@ const LuiDrive = (() => {
         ops.push({ op: "set-prop", id, property, value });
       const text = el.dataset.luiText ?? el.textContent.trim();
       if (text) setProp("text", text);
+      // id/class visible as prop:id=/prop:class= selectors so
+      // scenarios can assert DOM structure the way in-process tests
+      // assert extension props.
+      if (el.id) setProp("id", el.id);
+      const cls = el.getAttribute("class");
+      if (cls) setProp("class", cls);
       const pe = boolAttr(el, "data-lui-press-enabled");
       if (pe !== null) setProp("press-enabled", pe);
       const en = boolAttr(el, "data-lui-enabled");
@@ -78,6 +90,10 @@ const LuiDrive = (() => {
     for (const el of allNodes()) {
       if (!el.parentElement?.closest("[data-lui-node-id]")) visit(el);
     }
+    for (const id of lastIds) {
+      if (!seen.has(id)) ops.push({ op: "drop-node", id });
+    }
+    lastIds = seen;
     ws.send(JSON.stringify({ ops }));
   }
 
@@ -99,9 +115,47 @@ const LuiDrive = (() => {
     });
   }
 
+  // Combos like "mod,k"/"cmd,p" become real modifier flags so
+  // global shortcuts (e.g. a palette on mod+k) can be driven from
+  // scenarios. `mods` arrives comma-separated from the scenario
+  // `key "mod+k"` command.
+  function dispatchKeydown(target, key, mods) {
+    const flags = {
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+    };
+    for (const m of String(mods || "").split(",").map((s) => s.toLowerCase())) {
+      if (m === "mod" || m === "cmd" || m === "meta") flags.metaKey = true;
+      else if (m === "ctrl" || m === "control") flags.ctrlKey = true;
+      else if (m === "shift") flags.shiftKey = true;
+      else if (m === "alt" || m === "option") flags.altKey = true;
+    }
+    target.dispatchEvent(
+      new KeyboardEvent("keydown", { key, ...flags, bubbles: true })
+    );
+  }
+
   // drive -> host event dispatch: replay as a real DOM event so the
   // page's own handlers run exactly as a user gesture would.
   function dispatchEvent(msg) {
+    // key-surface ext events carry {key, mods}; id 0 (no key-surface
+    // node in the tree) means a document-level keydown that reaches
+    // capture listeners on document.
+    if (
+      msg.event === "ext" &&
+      msg.ident === "key-surface" &&
+      msg.name === "key"
+    ) {
+      const f = msg.fields || {};
+      dispatchKeydown(
+        nodeEl(msg.id) || document.activeElement || document.body,
+        f.key,
+        f.mods
+      );
+      return;
+    }
     const el = nodeEl(msg.id);
     if (!el) return;
     switch (msg.event) {
@@ -127,13 +181,15 @@ const LuiDrive = (() => {
         break;
       }
       case "key":
-        el.dispatchEvent(
-          new KeyboardEvent("keydown", { key: msg.value, bubbles: true })
-        );
+        dispatchKeydown(el, msg.value, msg.mods);
         break;
       default:
         break;
     }
+  }
+
+  function dispatchNav(msg) {
+    if (msg.hash) location.hash = msg.hash;
   }
 
   function attach(url) {
@@ -167,7 +223,9 @@ const LuiDrive = (() => {
     };
     ws.onmessage = (e) => {
       try {
-        dispatchEvent(JSON.parse(e.data));
+        const msg = JSON.parse(e.data);
+        if (msg.event === "nav") dispatchNav(msg);
+        else dispatchEvent(msg);
       } catch (_) {}
     };
     ws.onclose = () => {

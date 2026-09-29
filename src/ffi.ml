@@ -72,6 +72,13 @@ let send_event t = function
   | ToggleChanged (n, checked) ->
     send t "toggle_changed" (Int64.of_int n) "" "" "" (if checked then 1 else 0) 0.0
   | ValueChanged (n, v) -> send t "slider_changed" (Int64.of_int n) "" "" "" 0 v
+  | ScrollCompleted (n, offset, direction) ->
+    send t "scroll_completed" (Int64.of_int n) direction "" "" offset 0.0
+  | VisibleRange (n, first, last) ->
+    send t "visible_range" (Int64.of_int n)
+      (Printf.sprintf "%d,%d" first last)
+      "" "" 0 0.0
+  | Picked (n, value) -> send t "picked" (Int64.of_int n) value "" "" 0 0.0
   | ExtensionEvent (n, identifier, name, fields) ->
     let fields_json =
       `Assoc (String_map.fold (fun k v acc -> (k, wire_json v) :: acc) fields [])
@@ -104,4 +111,5 @@ let driver t =
     poll = (fun () -> (ignore (poll t) : unit));
     tap = Session.tap_unsupported;
     frames = Session.no_frames;
+    send_nav = (fun _ -> ());
   }

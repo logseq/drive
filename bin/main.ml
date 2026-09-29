@@ -12,6 +12,9 @@ let usage =
   \        <scenario.drive>"
 
 let () =
+  (* a dead host ws must not kill the scenario mid-send — surface the
+     write error as an exception instead of a SIGPIPE exit *)
+  Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   let lib = ref "" in
   let socket = ref "" in
   let ws_listen = ref 0 in

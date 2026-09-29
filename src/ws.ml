@@ -162,13 +162,16 @@ let read_exact ic n =
   really_input ic b 0 n;
   Bytes.unsafe_to_string b
 
-(* Read one client frame. Returns [`Text s | `Close | `Ping s | `Pong]
+(* Read one client frame. `Text/`Cont carry (payload, fin) — browsers
+   fragment large messages, so callers must accumulate `Cont payloads
+   until fin is true. Also returns [`Close | `Ping s | `Pong | `Skip]
    or `Eof. *)
 let read_frame ic =
   match read_exact ic 2 with
   | exception End_of_file -> `Eof
   | hdr ->
     let b0 = Char.code hdr.[0] and b1 = Char.code hdr.[1] in
+    let fin = b0 land 0x80 <> 0 in
     let opcode = b0 land 0x0f in
     let masked = b1 land 0x80 <> 0 in
     let len0 = b1 land 0x7f in
@@ -193,7 +196,8 @@ let read_frame ic =
       else payload
     in
     (match opcode with
-     | 0x1 -> `Text payload
+     | 0x1 -> `Text (payload, fin)
+     | 0x0 -> `Cont (payload, fin)
      | 0x8 -> `Close
      | 0x9 -> `Ping payload
      | 0xA -> `Pong
