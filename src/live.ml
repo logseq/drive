@@ -163,8 +163,25 @@ let wire_to_json = function
 
 let id_fields name id = [ ("event", `String name); ("id", `Int id) ]
 
+let detail_fields (d : pointer_detail) =
+  [ ("x", `Float d.x); ("y", `Float d.y); ("modifiers", `Int d.modifiers)
+  ; ("button", `Int d.button); ("target_class", `String d.target_class) ]
+
 let send_event t = function
   | Press id -> send t (`Assoc (id_fields "press" id))
+  | PressModifiers (id, modifiers) ->
+    send t (`Assoc (id_fields "press-modifiers" id @ [ ("modifiers", `Int modifiers) ]))
+  | PressDetail (id, d) ->
+    send t (`Assoc (id_fields "press-detail" id @ detail_fields d))
+  | PointerDown (id, d) ->
+    send t (`Assoc (id_fields "pointer-down" id @ detail_fields d))
+  | PointerUp (id, d) ->
+    send t (`Assoc (id_fields "pointer-up" id @ detail_fields d))
+  | PointerEnter id -> send t (`Assoc (id_fields "pointer-enter" id))
+  | PointerLeave id -> send t (`Assoc (id_fields "pointer-leave" id))
+  | ContextMenuPress (id, d) ->
+    send t (`Assoc (id_fields "context-menu" id @ detail_fields d))
+  | Load id -> send t (`Assoc (id_fields "load" id))
   | LongPress id -> send t (`Assoc (id_fields "long-press" id))
   | DoublePress id -> send t (`Assoc (id_fields "double-press" id))
   | Appear id -> send t (`Assoc (id_fields "appear" id))

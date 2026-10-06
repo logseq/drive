@@ -7,7 +7,8 @@
    (handled here, before dlopen). *)
 
 let usage =
-  "usage: drive (--lib <path> [--os macos|ios|generic] [--host swiftui|generic] \\\n\
+  "usage: drive (--lib <path> [--os macos|ios|android|linux|windows|generic] \\\n\
+  \        [--host swiftui|web|kotlin|gpui|generic] \\\n\
   \        [--env NAME=VALUE]... | --socket <path> | --ws-listen <port>) \\\n\
   \        <scenario.drive>"
 
@@ -54,14 +55,18 @@ let () =
     match !os with
     | "macos" -> Lui_protocol.MacOS
     | "ios" -> Lui_protocol.IOS
+    | "android" -> Lui_protocol.AndroidOS
     | "linux" -> Lui_protocol.LinuxOS
+    | "windows" -> Lui_protocol.WindowsOS
     | "generic" -> Lui_protocol.GenericOS
     | other -> failwith ("bad --os: " ^ other)
   in
   let host_kind =
     match !host with
     | "swiftui" -> Lui_protocol.SwiftUIHost
-    | "qml" -> Lui_protocol.QMLHost
+    | "web" -> Lui_protocol.WebHost
+    | "kotlin" -> Lui_protocol.KotlinHost
+    | "gpui" -> Lui_protocol.GPUIHost
     | "generic" -> Lui_protocol.GenericHost
     | other -> failwith ("bad --host: " ^ other)
   in

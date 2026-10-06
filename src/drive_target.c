@@ -25,6 +25,17 @@ typedef struct {
   int32_t (*start)(patch_cb, int32_t, int32_t);
   int32_t (*appear)(int64_t);
   int32_t (*press)(int64_t);
+  int32_t (*press_ex)(int64_t, int32_t);
+  int32_t (*press_detail)(int64_t, double, double, int32_t, int32_t,
+                          const char *);
+  int32_t (*pointer_down)(int64_t, double, double, int32_t, int32_t,
+                          const char *);
+  int32_t (*pointer_up)(int64_t, double, double, int32_t, int32_t,
+                        const char *);
+  int32_t (*context_menu_press)(int64_t, double, double, int32_t, int32_t,
+                                const char *);
+  int32_t (*pointer_enter)(int64_t);
+  int32_t (*pointer_leave)(int64_t);
   int32_t (*long_press)(int64_t);
   int32_t (*submit)(int64_t);
   int32_t (*dismiss)(int64_t);
@@ -33,6 +44,7 @@ typedef struct {
   int32_t (*text_changed)(int64_t, const char *);
   int32_t (*toggle_changed)(int64_t, int32_t);
   int32_t (*slider_changed)(int64_t, double);
+  int32_t (*picked)(int64_t, const char *);
   int32_t (*extension)(int64_t, const char *, const char *, const char *);
   int32_t (*poll)(void);
   int32_t (*stop)(void);
@@ -134,6 +146,14 @@ CAMLprim value drive_target_open(value pathv) {
   t->start = sym(lib, "lui_ocaml_start");
   t->appear = sym(lib, "lui_ocaml_appear");
   t->press = sym(lib, "lui_ocaml_press");
+  t->press_ex = sym(lib, "lui_ocaml_press_ex");
+  t->press_detail = sym(lib, "lui_ocaml_press_detail");
+  t->pointer_down = sym(lib, "lui_ocaml_pointer_down");
+  t->pointer_up = sym(lib, "lui_ocaml_pointer_up");
+  t->context_menu_press = sym(lib, "lui_ocaml_context_menu_press");
+  t->pointer_enter = sym(lib, "lui_ocaml_pointer_enter");
+  t->pointer_leave = sym(lib, "lui_ocaml_pointer_leave");
+  t->picked = sym(lib, "lui_ocaml_picked");
   t->long_press = sym(lib, "lui_ocaml_long_press");
   t->submit = sym(lib, "lui_ocaml_submit");
   t->dismiss = sym(lib, "lui_ocaml_dismiss");
@@ -179,6 +199,14 @@ CAMLprim value drive_target_event(value tv, value namev, value nodev,
   else if (!strcmp(name, "radio_changed") && t->radio_changed) ok = t->radio_changed(node);
   else if (!strcmp(name, "text_changed") && t->text_changed)
     ok = t->text_changed(node, String_val(a));
+  else if (!strcmp(name, "press_ex") && t->press_ex)
+    ok = t->press_ex(node, Int_val(iv));
+  else if (!strcmp(name, "pointer_enter") && t->pointer_enter)
+    ok = t->pointer_enter(node);
+  else if (!strcmp(name, "pointer_leave") && t->pointer_leave)
+    ok = t->pointer_leave(node);
+  else if (!strcmp(name, "picked") && t->picked)
+    ok = t->picked(node, String_val(a));
   else if (!strcmp(name, "toggle_changed") && t->toggle_changed)
     ok = t->toggle_changed(node, Int_val(iv));
   else if (!strcmp(name, "slider_changed") && t->slider_changed)
@@ -192,6 +220,39 @@ CAMLprim value drive_target_event_bc(value *argv, int argn) {
   (void)argn;
   return drive_target_event(argv[0], argv[1], argv[2], argv[3], argv[4],
                             argv[5], argv[6], argv[7]);
+}
+
+/* pointer-detail events: (node, x, y, modifiers, button, target_class). */
+CAMLprim value drive_target_event_detail(value tv, value namev,
+                                         value nodev, value xv, value yv,
+                                         value modifiersv, value buttonv,
+                                         value classv) {
+  CAMLparam5(tv, namev, nodev, xv, yv);
+  CAMLxparam3(modifiersv, buttonv, classv);
+  drive_target *t = Target_val(tv);
+  const char *name = String_val(namev);
+  int64_t node = Int64_val(nodev);
+  double x = Double_val(xv);
+  double y = Double_val(yv);
+  int32_t modifiers = Int_val(modifiersv);
+  int32_t button = Int_val(buttonv);
+  const char *target_class = String_val(classv);
+  int ok = 0;
+  if (!strcmp(name, "press_detail") && t->press_detail)
+    ok = t->press_detail(node, x, y, modifiers, button, target_class);
+  else if (!strcmp(name, "pointer_down") && t->pointer_down)
+    ok = t->pointer_down(node, x, y, modifiers, button, target_class);
+  else if (!strcmp(name, "pointer_up") && t->pointer_up)
+    ok = t->pointer_up(node, x, y, modifiers, button, target_class);
+  else if (!strcmp(name, "context_menu_press") && t->context_menu_press)
+    ok = t->context_menu_press(node, x, y, modifiers, button, target_class);
+  CAMLreturn(Val_int(ok));
+}
+
+CAMLprim value drive_target_event_detail_bc(value *argv, int argn) {
+  (void)argn;
+  return drive_target_event_detail(argv[0], argv[1], argv[2], argv[3],
+                                   argv[4], argv[5], argv[6], argv[7]);
 }
 
 CAMLprim value drive_target_poll(value tv) {

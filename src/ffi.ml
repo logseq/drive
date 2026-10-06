@@ -12,6 +12,9 @@ external c_start : t_ext -> int -> int -> int = "drive_target_start"
 external c_event :
   t_ext -> string -> int64 -> string -> string -> string -> int -> float -> int
   = "drive_target_event_bc" "drive_target_event"
+external c_event_detail :
+  t_ext -> string -> int64 -> float -> float -> int -> int -> string -> int
+  = "drive_target_event_detail_bc" "drive_target_event_detail"
 external c_poll : t_ext -> int = "drive_target_poll"
 external c_next : t_ext -> string option = "drive_target_next"
 external c_stop : t_ext -> int = "drive_target_stop"
@@ -22,8 +25,21 @@ type t = {
   tree : Model.t;
 }
 
-let os_code = function MacOS -> 1 | IOS -> 2 | LinuxOS -> 4 | _ -> 0
-let host_code = function SwiftUIHost -> 2 | QMLHost -> 4 | _ -> 0
+(* codes mirror the *_bridge.ml decoders (examples/*/native/*_bridge.ml) *)
+let os_code = function
+  | MacOS -> 1
+  | IOS -> 2
+  | AndroidOS -> 3
+  | LinuxOS -> 4
+  | WindowsOS -> 5
+  | _ -> 0
+
+let host_code = function
+  | WebHost -> 1
+  | SwiftUIHost -> 2
+  | KotlinHost -> 4
+  | GPUIHost -> 6
+  | _ -> 0
 
 let wire_json = function
   | StringValue s -> `String s
@@ -79,6 +95,30 @@ let send_event t = function
       (Printf.sprintf "%d,%d" first last)
       "" "" 0 0.0
   | Picked (n, value) -> send t "picked" (Int64.of_int n) value "" "" 0 0.0
+  | PressModifiers (n, mods) ->
+    send t "press_ex" (Int64.of_int n) "" "" "" mods 0.0
+  | PointerEnter n -> send t "pointer_enter" (Int64.of_int n) "" "" "" 0 0.0
+  | PointerLeave n -> send t "pointer_leave" (Int64.of_int n) "" "" "" 0 0.0
+  | (PressDetail (n, d) | PointerDown (n, d) | PointerUp (n, d)
+    | ContextMenuPress (n, d)) as ev ->
+    let name =
+      match ev with
+      | PressDetail _ -> "press_detail"
+      | PointerDown _ -> "pointer_down"
+      | PointerUp _ -> "pointer_up"
+      | _ -> "context_menu_press"
+    in
+    let deadline = Unix.gettimeofday () +. 0.2 in
+    ignore
+      (c_event_detail t.handle name (Int64.of_int n) d.x d.y d.modifiers
+         d.button d.target_class);
+    while not (drain t) && Unix.gettimeofday () < deadline do
+      Unix.sleepf 0.005
+    done;
+    ignore (drain t)
+  | Load _ ->
+    (* no lui_ocaml_load export: the event exists for in-process apps *)
+    ()
   | ExtensionEvent (n, identifier, name, fields) ->
     let fields_json =
       `Assoc (String_map.fold (fun k v acc -> (k, wire_json v) :: acc) fields [])
