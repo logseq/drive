@@ -8,7 +8,7 @@
 
 let usage =
   "usage: drive (--lib <path> [--os macos|ios|android|linux|windows|generic] \\\n\
-  \        [--host swiftui|web|kotlin|gpui|generic] \\\n\
+  \        [--host swiftui|web|kotlin|generic] \\\n\
   \        [--env NAME=VALUE]... | --socket <path> | --ws-listen <port>) \\\n\
   \        <scenario.drive>"
 
@@ -66,7 +66,6 @@ let () =
     | "swiftui" -> Lui_protocol.SwiftUIHost
     | "web" -> Lui_protocol.WebHost
     | "kotlin" -> Lui_protocol.KotlinHost
-    | "gpui" -> Lui_protocol.GPUIHost
     | "generic" -> Lui_protocol.GenericHost
     | other -> failwith ("bad --host: " ^ other)
   in
