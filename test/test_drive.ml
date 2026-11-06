@@ -271,6 +271,53 @@ let test_native_completion_contract () =
        "legacy host cannot inject native input", None, "ok", false;
        "incompatible version", Some {|{"drive":"hello","version":2,"capabilities":["click"]}|}, "ok", false ])
 
+let test_fatal_protocol_polling () =
+  List.iter
+    (fun source ->
+      let t = Live.create ~send_line:(fun _ -> ()) () in
+      Live.ingest_line t {|{"drive":"hello","version":1,"capabilities":["click"]}|};
+      Live.ingest_line t {|{"frames":[[1,0,0,10,10]]}|};
+      Live.ingest_line t {|{"ops":[{"op":"create-node","id":1,"kind":"button"}]}|};
+      let d = Live.driver t in
+      Live.enqueue t {|{"drive":"unexpected","version":1}|};
+      let failed =
+        try Scenario.run ~input:Input.Native d source <> []
+        with Failure _ -> true
+      in
+      Alcotest.(check bool) "fatal protocol error cannot pass" true failed)
+    [ "expect id:1"; "" ]
+
+let test_native_deadline_includes_send () =
+  let host = ref None in
+  let closes = ref 0 in
+  let sends = ref 0 in
+  let timeout = 0.01 in
+  let t = Live.create ~close:(fun () -> incr closes)
+      ~send_line:(fun line ->
+        incr sends;
+        let request = Yojson.Safe.Util.member "request" (Yojson.Safe.from_string line) in
+        let deadline = Unix.gettimeofday () +. timeout in
+        let rec exhaust_budget () =
+          let remaining = deadline -. Unix.gettimeofday () in
+          if remaining > 0.0 then (Unix.sleepf remaining; exhaust_budget ())
+        in
+        exhaust_budget ();
+        Option.iter (fun t -> Live.enqueue t (Yojson.Safe.to_string (`Assoc [
+          "drive", `String "result"; "version", `Int 1;
+          "request", request; "ok", `Bool true ]))) !host) ()
+  in
+  host := Some t;
+  Live.ingest_line t {|{"drive":"hello","version":1,"capabilities":["click"]}|};
+  Alcotest.(check bool) "late completion cannot succeed" true
+    (Result.is_error (Live.native t ~timeout (Input.Click 1)));
+  Alcotest.(check int) "deadline closes transport" 1 !closes;
+  let sent = !sends in
+  Alcotest.(check bool) "deadline poisons session" true
+    (Result.is_error (Live.native t ~timeout (Input.Click 1)));
+  Alcotest.(check int) "no later input" sent !sends;
+  Live.close t;
+  Alcotest.(check int) "cleanup does not close twice" 1 !closes
+
 (* ---------- scenario DSL ---------- *)
 
 let test_scenario_pass () =
@@ -440,6 +487,8 @@ let () =
           Alcotest.test_case "tap miss / no frames" `Quick
             test_live_tap_miss;
           Alcotest.test_case "native completion contract" `Quick test_native_completion_contract;
+          Alcotest.test_case "fatal protocol errors fail polling" `Quick test_fatal_protocol_polling;
+          Alcotest.test_case "native deadline includes sending" `Quick test_native_deadline_includes_send;
           Alcotest.test_case "TCP attach is loopback-only" `Quick test_tcp_loopback_admission;
         ] );
       ( "ws",

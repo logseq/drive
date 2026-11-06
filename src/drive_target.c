@@ -10,6 +10,7 @@
 #include <caml/memory.h>
 #include <caml/fail.h>
 #include <caml/custom.h>
+#include <caml/unixsupport.h>
 
 #include <dlfcn.h>
 #include <pthread.h>
@@ -17,6 +18,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+
+/* Per-call nonblocking writes leave the buffered reader's socket mode intact. */
+CAMLprim value drive_send_nonblocking(value socket, value data, value offset,
+                                     value length) {
+  int fd = Int_val(socket);
+  int flags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+  flags |= MSG_NOSIGNAL;
+#elif defined(SO_NOSIGPIPE)
+  int enabled = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) == -1)
+    caml_uerror("setsockopt", Nothing);
+#endif
+  ssize_t n = send(fd, String_val(data) + Long_val(offset), Long_val(length), flags);
+  if (n == -1) caml_uerror("send", Nothing);
+  return Val_long(n);
+}
 
 typedef void (*patch_cb)(const char *);
 
