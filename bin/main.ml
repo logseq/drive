@@ -12,7 +12,7 @@ let usage =
   \        [--env NAME=VALUE]... | --socket <path> | --ws-listen <port>) \\\n\
   \        <scenario.drive>"
 
-let () =
+let main () =
   (* a dead host ws must not kill the scenario mid-send — surface the
      write error as an exception instead of a SIGPIPE exit *)
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
@@ -23,6 +23,8 @@ let () =
   let host = ref "generic" in
   let env = ref [] in
   let scenario = ref "" in
+  let input = ref Drive.Input.Semantic in
+  let timeout = ref 5.0 in
   let anon s =
     if !scenario = "" then scenario := s
     else failwith ("unexpected argument: " ^ s)
@@ -35,14 +37,23 @@ let () =
         Arg.Set_int ws_listen,
         "PORT  accept a WebSocket host attach (web: page dials out to drive)" );
       ("--os", Arg.Set_string os, "target os profile (default generic)");
+      ("--input", Arg.Symbol ([ "semantic"; "native" ],
+        (function "native" -> input := Drive.Input.Native | _ -> input := Drive.Input.Semantic)),
+        "MODE  semantic injection (default) or acknowledged native host input");
+      ("--action-timeout", Arg.Set_float timeout, "SECONDS  host snapshot/action timeout (default 5)");
       ("--host", Arg.Set_string host, "target host profile (default generic)");
       ("--env", Arg.String (fun kv -> env := kv :: !env), "NAME=VALUE for the target process env");
     ]
     anon usage;
-  if (!lib = "" && !socket = "" && !ws_listen = 0) || !scenario = "" then begin
+  let targets = List.filter Fun.id [ !lib <> ""; !socket <> ""; !ws_listen <> 0 ] in
+  if List.length targets <> 1 || !scenario = "" then begin
     prerr_endline usage;
     exit 2
   end;
+  if !input = Drive.Input.Native && !lib <> "" then
+    failwith "drive: native input requires --socket or --ws-listen; FFI only supports semantic injection";
+  if not (Float.is_finite !timeout) || !timeout <= 0.0 then
+    failwith "drive: --action-timeout must be a finite positive number";
   List.iter
     (fun kv ->
       match String.index_opt kv '=' with
@@ -85,7 +96,7 @@ let () =
             (Unix.error_message e);
           exit 2
       in
-      (Drive.Live.driver live, fun () -> ())
+      (Drive.Live.driver ~timeout:!timeout live, fun () -> Drive.Live.close live)
     else if !ws_listen <> 0 then
       let live =
         try Drive.Live.listen_ws ~port:!ws_listen
@@ -98,7 +109,7 @@ let () =
           Printf.eprintf "drive: ws-listen %d: %s\n" !ws_listen msg;
           exit 2
       in
-      (Drive.Live.driver live, fun () -> ())
+      (Drive.Live.driver ~timeout:!timeout live, fun () -> Drive.Live.close live)
     else
       let target =
         try Drive.Ffi.open_target ~path:!lib ~os:os_kind ~host:host_kind
@@ -108,10 +119,19 @@ let () =
       in
       (Drive.Ffi.driver target, fun () -> ignore (Drive.Ffi.stop target))
   in
-  let failures = Drive.Scenario.run ~emit:print_endline driver source in
+  let failures =
+    Fun.protect ~finally:stop (fun () ->
+      Drive.Scenario.run ~input:!input ~emit:print_endline driver source)
+  in
   List.iter
     (fun (f : Drive.Scenario.failure) ->
       Printf.eprintf "line %d: %s\n" f.line f.message)
     failures;
-  stop ();
   exit (if failures = [] then 0 else 1)
+
+let () =
+  try main () with
+  | Failure msg | Invalid_argument msg | Sys_error msg -> prerr_endline msg; exit 2
+  | Unix.Unix_error (e, call, _) ->
+    Printf.eprintf "drive: %s: %s\n" call (Unix.error_message e);
+    exit 2
