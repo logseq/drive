@@ -1,10 +1,11 @@
-# Drive iOS native host (source-only)
+# Drive iOS native host (XCTest integration source)
 
-This adapter is implementation source, **not yet Apple-SDK compiled or
-Simulator-validated**. Linux core checks do not validate XCTest, UIKit, Network,
-Swift concurrency annotations, keyboard behavior, or native coordinate transforms.
-Do not treat this directory as a validated platform release until the integrating
-application builds it with Xcode and exercises it through its UI-testing target.
+The Apple compile-only workflow builds the standalone XCTest target with the
+iOS Simulator SDK; **native Simulator/device input is not yet validated**.
+Linux core checks do not validate XCTest, UIKit, Network, Swift concurrency,
+keyboard behavior, or native coordinate transforms. The integrating application
+must still build/install its own DEBUG probe-enabled app and exercise this runner
+through a UI-testing target before treating it as device-tested support.
 
 ## Two processes, no semantic fallback
 
@@ -67,8 +68,8 @@ project/build artifacts. The project has **one UI-testing target and no app
 target/dependencies**; Target Application is intentionally None because the
 entrypoint uses `XCUIApplication(bundleIdentifier:)`. The app need not be built
 or installed for this compile gate. The command does not run UI tests or launch
-a Simulator. **The generator was exercised on Linux; this Xcode command has not
-been executed or verified yet.**
+a Simulator. The same command is exercised by the Apple compile-only workflow;
+successful compilation is not evidence of app launch or native interaction.
 
 For an actual UI run, separately build and install the matching DEBUG app on the
 selected Simulator first (the standalone project does not install the app under

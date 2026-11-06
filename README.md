@@ -209,7 +209,7 @@ Native scenarios stop at the first failure.
 | `web/lui-drive.js` | Synthetic DOM events | No |
 | `web/cdp-host.mjs` | No | Chromium mouse, text, keys, wheel, pointer drag, PNG |
 | Android | Existing host-specific semantic attach | Optional LUI debug instrumentation host, API 30+; device input unverified |
-| iOS | Existing host-specific semantic attach | [Separate XCTest runner](apple/README.md) + DEBUG LUI read-only probe; Apple validation pending |
+| iOS | Existing host-specific semantic attach | [Separate XCTest runner](apple/README.md) + DEBUG LUI read-only probe; runner compiles, device input unverified |
 | MyGo | Existing host-specific semantic attach | Unsupported: the pinned SDK has no public live-window input dispatcher |
 
 Android's optional host lives in [LUI](https://github.com/logseq/lui), under
