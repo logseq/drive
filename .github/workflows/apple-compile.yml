@@ -1,0 +1,32 @@
+name: Apple native host compile
+
+on:
+  pull_request:
+    paths:
+      - 'apple/**'
+      - '.github/workflows/apple-compile.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-compile-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  ios-xctest-compile:
+    name: iOS XCTest build-for-testing
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate standalone UI-testing project
+        run: python3 apple/generate-project.py --app-bundle-id dev.lui.components
+      - name: Compile iOS runner without executing UI tests
+        run: >-
+          xcodebuild
+          -project apple/.generated/DriveApple.xcodeproj
+          -scheme DriveApple -configuration Debug
+          -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath apple/.generated/DerivedData
+          CODE_SIGNING_ALLOWED=NO build-for-testing
