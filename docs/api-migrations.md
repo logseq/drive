@@ -1,5 +1,48 @@
 # API and wire migrations
 
+## iOS content-window selection with the software keyboard
+
+The XCTest runner selects exactly one application window containing a native
+descendant whose identifier equals an **explicit**, nonempty LUI identifier
+from the current read-only snapshot. It uses public XCTest `containing`
+predicates, not window order, private class names or hittability filtering.
+The software keyboard and text-service windows can coexist with that content
+window when they contain none of those identifiers. All anchored windows count:
+zero or multiple matching content windows reject, even if one is hidden.
+Foreground state and the selected window's probe-viewport size must still match.
+
+Empty/unanchored native trees are now explicitly unsupported, including for
+settle/screenshot. Add a stable `accessibility-identifier` to a real LUI control
+or content node (for example `counter` on the existing count label), then rebuild
+the app/runner; no new wire fields or probe behavior are required. Only windows
+represented by the snapshot's identifiers can be recognized as content; this
+does not add support for multiple independent scenes or uninstrumented content
+windows. Keep one fixed-orientation app scene. Control uniqueness, enabled and
+hittable checks, window-local coordinates, input deadlines and poisoned-session
+behavior are unchanged.
+
+## iOS native editor target selection
+
+The XCTest runner now resolves standard LUI editor nodes by their explicit
+identifier **and native editor type**, for both frame publication/settling and
+target actions. SwiftUI can propagate an editor identifier to a zero-size
+auxiliary `Other` element as well as the real native editor; this no longer
+makes the editor query ambiguous.
+
+`text-field`/`input` require `TextField`, `secure-field` requires
+`SecureTextField`, `search-field` accepts `SearchField`/`TextField`, and
+`textarea` accepts `TextView`/`TextField` (SwiftUI's vertical TextField).
+Exactly one matching editor must exist, including hidden/disabled matches in
+the count; multiple equivalent editors still reject before input. Effective
+LUI identifier uniqueness and fresh enabled/hittable checks are unchanged.
+Other node kinds retain all-types native uniqueness. There is no first-match,
+label, coordinate or semantic fallback, and no event/wire changes.
+
+No scenario migration is required: keep, for example, `type testid:editor "hello"`
+with an explicit `accessibility-identifier="editor"` on the LUI text-field node.
+Rebuild the UI-test runner. Native replacement still uses public XCTest
+Select All/Delete/typing and verifies exact retained text before success.
+
 ## Live transport deadlines and fatal polling errors
 
 Native actions now use **one deadline for sending and completion**, including
