@@ -45,9 +45,9 @@ let enqueue t line =
   Queue.add line t.queue;
   Mutex.unlock t.mu
 
-let connect ~socket_path =
-  let sock = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-  Unix.connect sock (Unix.ADDR_UNIX socket_path);
+let connect_stream ~domain address =
+  let sock = Unix.socket domain Unix.SOCK_STREAM 0 in
+  (try Unix.connect sock address with exn -> Unix.close sock; raise exn);
   let ic = Unix.in_channel_of_descr sock in
   let oc = Unix.out_channel_of_descr (Unix.dup sock) in
   let close () =
@@ -73,6 +73,20 @@ let connect ~socket_path =
           with _ -> mark_disconnected t)
        ());
   t
+
+let connect ~socket_path =
+  connect_stream ~domain:Unix.PF_UNIX (Unix.ADDR_UNIX socket_path)
+
+let connect_tcp ~host ~port =
+  if port < 1 || port > 65535 then
+    invalid_arg "drive: TCP port must be between 1 and 65535";
+  let domain, address =
+    match host with
+    | "127.0.0.1" | "localhost" -> Unix.PF_INET, Unix.inet_addr_loopback
+    | "::1" -> Unix.PF_INET6, Unix.inet6_addr_loopback
+    | _ -> invalid_arg "drive: TCP attach must use 127.0.0.1, localhost or [::1]"
+  in
+  connect_stream ~domain (Unix.ADDR_INET (address, port))
 
 (* Browser hosts cannot accept connections, so for web attach the page
    dials out: `drive --ws-listen <port>` accepts a WebSocket and speaks
