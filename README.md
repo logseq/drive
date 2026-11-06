@@ -208,7 +208,23 @@ Native scenarios stop at the first failure.
 | In-process / FFI | Yes | No |
 | `web/lui-drive.js` | Synthetic DOM events | No |
 | `web/cdp-host.mjs` | No | Chromium mouse, text, keys, wheel, pointer drag, PNG |
-| Apple / Android / MyGo | Existing host-specific semantic attach | Requires a v1 native adapter |
+| Android | Existing host-specific semantic attach | Optional LUI debug instrumentation host, API 30+; device input unverified |
+| iOS | Existing host-specific semantic attach | [Separate XCTest runner](apple/README.md) + DEBUG LUI read-only probe; Apple validation pending |
+| MyGo | Existing host-specific semantic attach | Unsupported: the pinned SDK has no public live-window input dispatcher |
+
+Android's optional host lives in [LUI](https://github.com/logseq/lui), under
+`platform/android/drive`; its sample launcher explicitly preserves/restores a
+test-device IME and TCP forwarding. Text requires deliberately selecting the
+test IME; the SDK never changes it automatically. Compilation and protocol
+tests are not evidence of actual device input. Unsupported geometry/input fails
+instead of falling back to semantic events.
+
+The iOS runner is a separate UI-testing target, not app code. It uses public
+XCTest input and reads the app through an explicitly enabled DEBUG probe;
+stable native accessibility identifiers are required. The standalone generated
+project compiles the runner only, not the app under test. Follow the
+[Apple guide](apple/README.md) for build/install steps and public XCTest limits.
+Neither mobile adapter implies MyGo support or universal animation/network idle.
 
 CDP currently targets tagged light DOM, not iframes or shadow roots.
 Drag is a pointer gesture, not a promised HTML5 drag-and-drop operation;
