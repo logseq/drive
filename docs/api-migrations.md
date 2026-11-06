@@ -148,3 +148,36 @@ The driver validates base64 and the PNG signature before exposing bytes.
 Bind all test/debug transports to loopback and use isolated browser
 profiles. These endpoints grant control over the attached application;
 they are development facilities, not production remote-control APIs.
+
+## Optional iOS XCTest native runner
+
+`apple/` adds source for a separate XCTest UI-testing target and a standard
+library Python Xcode project generator. It does not change Drive protocol v1,
+semantic defaults or existing transports. Compile the runner with the documented
+`build-for-testing` command; separately build/install a matching DEBUG LUI app
+before an actual UI run. Never link the runner into the application binary.
+
+The app explicitly opts into LUI's read-only snapshot probe on IPv4 loopback
+port 49378. The runner exposes the native Drive endpoint on loopback port 49379:
+
+```sh
+drive --tcp 127.0.0.1:49379 --input native --action-timeout 5 scenario.drive
+```
+
+Initial hello and full frames precede ops readiness. Replacement snapshots
+drop previously published IDs before rebuilding nodes/properties/links;
+fresh ops and frames precede every result. Selector actions require explicit,
+unique native accessibility identifiers and current enabled/hittable controls.
+There is no label, coordinate or semantic fallback for selector input.
+Coordinates are window-local logical points; screenshots are PNG pixels.
+Typing is native replacement, including empty text, using the English Select
+All edit menu and software keyboard. Unsupported key combinations/editors
+fail explicitly. Settling samples retained/native-frame quiet, not exhaustive
+animation, network or application-task completion.
+
+Deadline/disconnect poisons and closes transport and discards subsequent input.
+Public XCTest cannot forcibly interrupt an atomic gesture already in flight;
+that call may finish after the transport deadline. No retry or late success is
+issued. Physical-device forwarding, multiple scenes, and arbitrary custom
+canvas targeting are not supplied. See [`apple/README.md`](../apple/README.md)
+for compile validation, app hookup, exact capabilities and platform limits.
