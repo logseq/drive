@@ -10,6 +10,7 @@ open Lui_protocol
 
 type t = {
   send_line : string -> unit;
+  send_line_until : (deadline:float -> string -> unit) option;
   queue : string Queue.t;
   mu : Mutex.t;
   tree : Model.t;
@@ -21,14 +22,15 @@ type t = {
   mutable pending : int option;
   mutable reply : Yojson.Safe.t option;
   mutable disconnected : bool;
+  mutable closed : bool;
   close_transport : unit -> unit;
 }
 
-let create ?(close = fun () -> ()) ~send_line () =
-  { send_line; queue = Queue.create (); mu = Mutex.create ();
+let create ?(close = fun () -> ()) ?send_line_until ~send_line () =
+  { send_line; send_line_until; queue = Queue.create (); mu = Mutex.create ();
     tree = Model.create (); frames = Hashtbl.create 64;
     capabilities = None; protocol_error = None; ready = false;
-    next_request = 0; pending = None; reply = None; disconnected = false;
+    next_request = 0; pending = None; reply = None; disconnected = false; closed = false;
     close_transport = close }
 
 let mark_disconnected t =
@@ -37,31 +39,72 @@ let mark_disconnected t =
   Mutex.unlock t.mu
 
 let close t =
-  mark_disconnected t;
-  t.close_transport ()
+  Mutex.lock t.mu;
+  let closing = not t.closed in
+  t.closed <- true;
+  t.disconnected <- true;
+  Mutex.unlock t.mu;
+  if closing then t.close_transport ()
 
 let enqueue t line =
   Mutex.lock t.mu;
   Queue.add line t.queue;
   Mutex.unlock t.mu
 
+external send_nonblocking : Unix.file_descr -> string -> int -> int -> int
+  = "drive_send_nonblocking"
+
+let socket_io sock ic =
+  let closed = Atomic.make false in
+  let write_mu = Mutex.create () in
+  let check deadline =
+    if Atomic.get closed then failwith "drive: live host disconnected";
+    if Unix.gettimeofday () >= deadline then failwith "host write timed out"
+  in
+  let write_until ~deadline parts =
+    let rec lock () =
+      check deadline;
+      if not (Mutex.try_lock write_mu) then begin
+        Unix.sleepf (min 0.005 (max 0.0 (deadline -. Unix.gettimeofday ())));
+        lock ()
+      end
+    in
+    lock ();
+    Fun.protect ~finally:(fun () -> Mutex.unlock write_mu) (fun () ->
+      List.iter (fun data ->
+        let rec write offset =
+          check deadline;
+          if offset < String.length data then
+            match send_nonblocking sock data offset (String.length data - offset) with
+            | 0 -> failwith "drive: live host disconnected"
+            | n -> write (offset + n)
+            | exception Unix.Unix_error (Unix.EINTR, _, _) -> write offset
+            | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) ->
+              let remaining = deadline -. Unix.gettimeofday () in
+              let wait = if Float.is_finite remaining then max 0.0 remaining else -1.0 in
+              (try ignore (Unix.select [] [sock] [] wait)
+               with Unix.Unix_error (Unix.EINTR, _, _) -> ());
+              write offset
+        in
+        write 0) parts)
+  in
+  let close () =
+    Atomic.set closed true;
+    (try Unix.shutdown sock Unix.SHUTDOWN_ALL with Unix.Unix_error _ -> ());
+    Mutex.lock write_mu;
+    Fun.protect ~finally:(fun () -> Mutex.unlock write_mu) (fun () -> close_in_noerr ic)
+  in
+  write_until, close
+
 let connect_stream ~domain address =
   let sock = Unix.socket domain Unix.SOCK_STREAM 0 in
   (try Unix.connect sock address with exn -> Unix.close sock; raise exn);
   let ic = Unix.in_channel_of_descr sock in
-  let oc = Unix.out_channel_of_descr (Unix.dup sock) in
-  let close () =
-    (try Unix.shutdown sock Unix.SHUTDOWN_ALL with Unix.Unix_error _ -> ());
-    close_out_noerr oc;
-    close_in_noerr ic
-  in
+  let write_until, close = socket_io sock ic in
+  let send_line_until ~deadline s = write_until ~deadline [s; "\n"] in
   let t =
-    create ~close
-      ~send_line:
-        (fun s ->
-          output_string oc s;
-          output_char oc '\n';
-          flush oc) ()
+    create ~close ~send_line_until
+      ~send_line:(send_line_until ~deadline:infinity) ()
   in
   ignore
     (Thread.create
@@ -105,19 +148,22 @@ let listen_ws ~port =
   Unix.setsockopt conn Unix.TCP_NODELAY true;
   let ic = Unix.in_channel_of_descr conn
   and oc = Unix.out_channel_of_descr (Unix.dup conn) in
-  if not (Ws.accept_handshake ic oc) then
-    failwith "drive: bad websocket handshake";
-  let write_mu = Mutex.create () in
-  let write ?(opcode = 1) s =
-    Mutex.lock write_mu;
-    Fun.protect ~finally:(fun () -> Mutex.unlock write_mu)
-      (fun () -> Ws.write_frame oc ~opcode s)
+  let accepted =
+    try Fun.protect ~finally:(fun () -> close_out_noerr oc)
+      (fun () -> Ws.accept_handshake ic oc)
+    with exn -> close_in_noerr ic; raise exn
+  in
+  if not accepted then begin
+    close_in_noerr ic;
+    failwith "drive: bad websocket handshake"
+  end;
+  let write_until, close = socket_io conn ic in
+  let write ?(opcode = 1) ~deadline s =
+    write_until ~deadline [Ws.frame_header ~opcode (String.length s); s]
   in
   let t =
-    create ~close:(fun () ->
-      (try Unix.shutdown conn Unix.SHUTDOWN_ALL with Unix.Unix_error _ -> ());
-      close_out_noerr oc;
-      close_in_noerr ic) ~send_line:(fun s -> write s) ()
+    create ~close ~send_line_until:(fun ~deadline s -> write ~deadline s)
+      ~send_line:(fun s -> write ~deadline:infinity s) ()
   in
   ignore
     (Thread.create
@@ -145,7 +191,7 @@ let listen_ws ~port =
                 end;
                 loop ()
               | `Ping payload ->
-                write ~opcode:10 payload;
+                write ~opcode:10 ~deadline:infinity payload;
                 loop ()
               | `Pong | `Skip -> loop ()
               | `Close | `Eof -> mark_disconnected t
@@ -207,24 +253,30 @@ let drain t =
 
 let poll t =
   ignore (drain t);
+  Option.iter failwith t.protocol_error;
   if t.disconnected then failwith "drive: live host disconnected"
 
 let send t json = t.send_line (Yojson.Safe.to_string json)
 
-let await t ~timeout predicate =
-  let deadline = Unix.gettimeofday () +. timeout in
+let await_until t ~deadline predicate =
   let rec loop () =
     poll t;
-    match t.protocol_error with
-    | Some msg -> Error msg
-    | None ->
-      if predicate () then Ok ()
-      else if Unix.gettimeofday () >= deadline then Error "host completion timed out"
-      else (Unix.sleepf 0.005; loop ())
+    if Unix.gettimeofday () >= deadline then Error "host completion timed out"
+    else if predicate () then Ok ()
+    else (Unix.sleepf (min 0.005 (max 0.0 (deadline -. Unix.gettimeofday ()))); loop ())
   in
   loop ()
 
+let await t ~timeout predicate =
+  await_until t ~deadline:(Unix.gettimeofday () +. timeout) predicate
+
+let abort t msg =
+  t.protocol_error <- Some msg;
+  (try close t with _ -> ());
+  Error msg
+
 let native_request t ~timeout action =
+  let deadline = Unix.gettimeofday () +. timeout in
   let name, fields = Input.request action in
   let context request msg =
     Printf.sprintf "native %s request %d: %s" name request msg
@@ -241,13 +293,16 @@ let native_request t ~timeout action =
     t.pending <- Some request;
     t.reply <- None;
     Fun.protect ~finally:(fun () -> t.pending <- None; t.reply <- None) (fun () ->
-      send t (`Assoc
+      let line = Yojson.Safe.to_string (`Assoc
         ([ ("drive", `String "action"); ("version", `Int 1);
-           ("request", `Int request); ("action", `String name) ] @ fields));
-      match await t ~timeout (fun () -> Option.is_some t.reply) with
+           ("request", `Int request); ("action", `String name) ] @ fields)) in
+      if Unix.gettimeofday () >= deadline then failwith "host write timed out";
+      (match t.send_line_until with
+       | Some write -> write ~deadline line
+       | None -> t.send_line line);
+      match await_until t ~deadline (fun () -> Option.is_some t.reply) with
       | Error msg ->
-        t.protocol_error <- Some (context request msg);
-        Error (context request msg)
+        abort t (context request msg)
       | Ok () ->
         match t.reply with
         | None -> Error (context request "missing result")
@@ -275,13 +330,15 @@ let native t ~timeout action =
   let fail msg =
     let name, _ = Input.request action in
     let msg = Printf.sprintf "native %s request %d: %s" name t.next_request msg in
-    t.protocol_error <- Some msg;
-    Error msg
+    abort t msg
   in
-  try native_request t ~timeout action with
-  | Failure msg | Sys_error msg | Yojson.Json_error msg -> fail msg
-  | Yojson.Safe.Util.Type_error (msg, _) -> fail ("invalid host message: " ^ msg)
-  | Unix.Unix_error (e, _, _) -> fail (Unix.error_message e)
+  match t.protocol_error with
+  | Some msg -> Error msg
+  | None ->
+    try native_request t ~timeout action with
+    | Failure msg | Sys_error msg | Yojson.Json_error msg -> fail msg
+    | Yojson.Safe.Util.Type_error (msg, _) -> fail ("invalid host message: " ^ msg)
+    | Unix.Unix_error (e, _, _) -> fail (Unix.error_message e)
 
 let send_nav t hash =
   send t (`Assoc [ ("event", `String "nav"); ("hash", `String hash) ])

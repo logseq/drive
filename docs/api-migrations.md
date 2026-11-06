@@ -1,5 +1,53 @@
 # API and wire migrations
 
+## Live transport deadlines and fatal polling errors
+
+Native actions now use **one deadline for sending and completion**, including
+write serialization, socket backpressure and WebSocket framing. Previously the
+completion timeout started after a potentially blocking write. Built-in Unix,
+TCP and WebSocket transports use per-call nonblocking socket sends without
+changing the concurrent reader's socket mode. There is no background action
+sender that can keep submitting input after the caller reports a timeout.
+
+A native write/completion timeout or transport failure poisons and closes the
+connection. Late results cannot revive it; start a fresh session rather than
+retrying an action that may already have run. `Live.close` is now idempotent,
+including its custom close callback, so existing `Fun.protect` cleanup remains
+safe after automatic closure. These deadlines do not cover TCP connect or the
+WebSocket HTTP upgrade.
+
+`Live.poll` now raises `Failure` for a recorded fatal protocol error, not only
+for disconnect. This includes polling inside assertions and the final scenario
+poll: an invalid/version-incompatible session can no longer pass merely because
+no further native action is sent. Embedding callers must treat this as a fatal
+session error and close the transport.
+
+### Custom transports
+
+Existing `Live.create ~send_line ~close ()` calls remain source-compatible.
+Arbitrary application callbacks cannot be preempted safely: `send_line` must
+return promptly and must not leave an asynchronous sender running after failure.
+A late callback return is rejected, but its blocking time cannot be bounded by
+Drive. Custom transports that may block should provide the new optional writer:
+
+```ocaml
+let live =
+  Drive.Live.create ~send_line:send_semantic ~close:close_transport
+    ~send_line_until:(fun ~deadline json ->
+      write_json_before ~deadline json)
+    ()
+```
+
+`deadline` is an absolute `Unix.gettimeofday ()` timestamp, shared with the
+completion wait. The callback receives the same serialized JSON string without
+a newline as `send_line`; it owns transport framing and must honor the deadline
+for lock acquisition and every partial write. Raise `Failure` (for example,
+`Failure "host write timed out"`) or `Unix.Unix_error` on failure/expiration.
+It must stop sending before returning/raising and must not enqueue work that can emit late
+input. Drive then poisons/closes the session and returns an action/request error.
+The optional writer is used for native actions; legacy semantic sends continue
+to use `send_line`. The default action timeout remains 5 seconds.
+
 ## Loopback TCP native host attach
 
 `Live.connect_tcp ~host ~port` and `drive --tcp HOST:PORT` add an optional
