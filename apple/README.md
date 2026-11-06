@@ -108,9 +108,17 @@ deadline longer than the runner's. Port collisions fail rather than binding a
 different interface. Project generation creates no simulator or app under test;
 Xcode build-for-testing creates the UI-test bundle/runner. Physical devices need explicit secure port
 forwarding for a Mac-hosted Drive client; automatic device transport is not
-implemented. Multiple scenes/windows and rotation during an action are rejected
-when native/probe viewport sizes disagree; use a fixed-orientation single-window
-test fixture.
+implemented. The runner requires exactly one content window containing at least
+one explicit nonempty LUI identifier from the current probe snapshot (public
+XCTest `containing` predicate). Zero or multiple anchored windows reject before
+input; there is no window-order, hittability or private-class filtering. Keyboard
+and text-service windows without those identifiers may coexist with the content
+window. Unanchored/empty native trees are unsupported, even for screenshots or
+settle; tag a real LUI control/content node such as the count label. Windows not
+represented by the snapshot's identifiers cannot be recognized as independent
+content. Multiple independent scenes and rotation remain unsupported; use one
+fixed-orientation app scene. The foreground check and selected content window's
+probe-viewport size check remain mandatory.
 
 ## Supported actions and limits
 
@@ -119,10 +127,18 @@ The runner advertises exactly `click`, `double-click`, `long-click`, `tap`,
 
 - Target actions require an explicit, nonempty, stable LUI
   `accessibility-identifier`, unique among effective LUI identifiers and native
-  accessibility elements. The runner matches the **native identifier property**,
+  accessibility controls. Standard editor kinds additionally constrain the native
+  type: `text-field`/`input` → TextField, `secure-field` → SecureTextField,
+  `search-field` → SearchField/TextField, `textarea` → TextView/TextField.
+  SwiftUI's auxiliary non-editor elements may inherit the same identifier and
+  are excluded only for these editor kinds. Exactly one matching editor is
+  required even if other matching editors are hidden/disabled; enabled/hittable
+  validation happens after counting. Frame publication uses the same query.
+  Other kinds still require uniqueness across all native types.
+  The runner matches the **native identifier property**,
   never a label fallback, and freshly checks existence, enabled, and hittable.
   Untagged controls, inaccessible custom canvas controls, hidden/offscreen
-  controls, and identifier propagation creating multiple native matches fail
+  controls, and identifier propagation creating multiple eligible native matches fail
   explicitly. Extension authors must expose the same identifier on the actual
   native control. There is no coordinate fallback for target actions and no
   automatic scrolling to a target.

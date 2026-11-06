@@ -132,13 +132,19 @@ public final class DriveXCTestRunner {
 
     private func window(_ snapshot: DriveProbeSnapshot) throws -> XCUIElement {
         guard app.state == .runningForeground else { throw DriveFailure.rejected("app is not foreground") }
-        let windows = app.windows.allElementsBoundByIndex.filter { $0.exists && !$0.frame.isEmpty }
-        guard windows.count == 1 else {
-            throw DriveFailure.rejected("Drive iOS requires exactly one visible application window")
+        let identifiers = Set(snapshot.nativeIdentifiers.values
+            .filter { $0.explicit && !$0.identifier.isEmpty }.map(\.identifier)).sorted()
+        guard !identifiers.isEmpty else {
+            throw DriveFailure.rejected("content window requires an explicit LUI accessibility-identifier")
         }
-        let window = windows[0]
+        let windows = app.windows.containing(NSPredicate(format: "identifier IN %@", identifiers))
+        guard windows.count == 1 else {
+            throw DriveFailure.rejected("Drive iOS requires exactly one content window containing explicit LUI identifiers")
+        }
+        let window = windows.element
         let frame = window.frame
-        guard abs(frame.width - snapshot.viewport[2]) <= 1,
+        guard window.exists, !frame.isEmpty,
+              abs(frame.width - snapshot.viewport[2]) <= 1,
               abs(frame.height - snapshot.viewport[3]) <= 1 else {
             throw DriveFailure.rejected("native window and probe viewport disagree; rotation/multiple scenes unsupported")
         }
@@ -162,6 +168,7 @@ public final class DriveXCTestRunner {
             frames[id] = [.int(id)] + frame.dropFirst().map { .double($0) }
         }
         var nativeState: [DriveJSON] = []
+        let kinds = nodeKinds(snapshot)
         for key in snapshot.nativeIdentifiers.keys.sorted() {
             try client.check(deadline: deadline)
             guard let id = Int(key), ids.contains(id), let info = snapshot.nativeIdentifiers[key] else {
@@ -169,7 +176,7 @@ public final class DriveXCTestRunner {
             }
             // Retained SwiftUI geometry is not used for native target actions.
             frames.removeValue(forKey: id)
-            let query = nativeQuery(identifier: info.identifier)
+            let query = nativeQuery(identifier: info.identifier, kind: kinds[id])
             let count = info.identifier.isEmpty ? 0 : query.count
             var state: [DriveJSON] = [.int(id), .int(count)]
             if count == 1 {
@@ -235,7 +242,7 @@ public final class DriveXCTestRunner {
         guard snapshot.nativeIdentifiers.values.filter({ $0.identifier == info.identifier }).count == 1 else {
             throw DriveFailure.rejected("effective accessibility-identifier is not unique in LUI")
         }
-        let query = nativeQuery(identifier: info.identifier)
+        let query = nativeQuery(identifier: info.identifier, kind: nodeKinds(snapshot)[id])
         guard query.count == 1 else {
             throw DriveFailure.rejected("node \(id) has no unique native accessibility element (hidden/custom controls are unsupported)")
         }
@@ -246,8 +253,28 @@ public final class DriveXCTestRunner {
         return element
     }
 
-    private func nativeQuery(identifier: String) -> XCUIElementQuery {
-        app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@", identifier))
+    private func nodeKinds(_ snapshot: DriveProbeSnapshot) -> [Int: String] {
+        var kinds: [Int: String] = [:]
+        for op in snapshot.ops where op["op"]?.string == "create-node" {
+            if let id = op["id"]?.integer, let kind = op["kind"]?.string { kinds[id] = kind }
+        }
+        return kinds
+    }
+
+    private func nativeQuery(identifier: String, kind: String?) -> XCUIElementQuery {
+        let query = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier == %@", identifier))
+        let types: [XCUIElement.ElementType]
+        switch kind {
+        case "text-field", "input": types = [.textField]
+        case "secure-field": types = [.secureTextField]
+        case "search-field": types = [.searchField, .textField]
+        case "textarea": types = [.textView, .textField]
+        default: return query
+        }
+        // SwiftUI can propagate an editor identifier to auxiliary non-editor elements.
+        // Count all matching editors, including disabled/hidden ones, before target validation.
+        return query.matching(NSPredicate(format: "elementType IN %@", types.map { NSNumber(value: $0.rawValue) }))
     }
 
     private func coordinate(_ point: CGPoint, window: XCUIElement) throws -> XCUICoordinate {
