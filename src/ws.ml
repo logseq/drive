@@ -203,26 +203,25 @@ let read_frame ic =
      | 0xA -> `Pong
      | _ -> `Skip)
 
+let frame_header ?(opcode = 1) len =
+  if len < 126 then
+    String.init 2 (fun i -> if i = 0 then Char.chr (0x80 lor opcode) else Char.chr len)
+  else if len <= 0xffff then
+    String.init 4 (fun i ->
+        match i with
+        | 0 -> Char.chr (0x80 lor opcode)
+        | 1 -> '\x7e'
+        | 2 -> Char.chr (len lsr 8)
+        | _ -> Char.chr (len land 0xff))
+  else begin
+    let b = Bytes.create 10 in
+    Bytes.set b 0 (Char.chr (0x80 lor opcode));
+    Bytes.set b 1 '\x7f';
+    Bytes.set_int64_be b 2 (Int64.of_int len);
+    Bytes.unsafe_to_string b
+  end
+
 let write_frame oc ?(opcode = 1) s =
-  let len = String.length s in
-  let hdr =
-    if len < 126 then
-      String.init 2 (fun i -> if i = 0 then Char.chr (0x80 lor opcode) else Char.chr len)
-    else if len <= 0xffff then
-      String.init 4 (fun i ->
-          match i with
-          | 0 -> Char.chr (0x80 lor opcode)
-          | 1 -> '\x7e'
-          | 2 -> Char.chr (len lsr 8)
-          | _ -> Char.chr (len land 0xff))
-    else begin
-      let b = Bytes.create 10 in
-      Bytes.set b 0 (Char.chr (0x80 lor opcode));
-      Bytes.set b 1 '\x7f';
-      Bytes.set_int64_be b 2 (Int64.of_int len);
-      Bytes.unsafe_to_string b
-    end
-  in
-  output_string oc hdr;
+  output_string oc (frame_header ~opcode (String.length s));
   output_string oc s;
   flush oc
