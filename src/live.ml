@@ -4,11 +4,8 @@
    stream the native renderer sees. Events are injected as newline JSON
    { "event": "press", "id": N, ... }.
 
-   Hosts that report node frames additionally interleave
-   {"frames":[[id,x,y,w,h],...]} lines (window coordinates, top-left
-   origin, full snapshot each time). Those feed [hit_test] so a
-   coordinate `tap x,y` resolves to the node a real gesture recognizer
-   would fire on. *)
+   Frames support legacy geometry-assisted semantic dispatch. Native
+   input uses a versioned capability handshake and request/result pairs. *)
 open Lui_protocol
 
 type t = {
@@ -17,7 +14,31 @@ type t = {
   mu : Mutex.t;
   tree : Model.t;
   frames : (int, Model.rect) Hashtbl.t;
+  mutable capabilities : string list option;
+  mutable protocol_error : string option;
+  mutable ready : bool;
+  mutable next_request : int;
+  mutable pending : int option;
+  mutable reply : Yojson.Safe.t option;
+  mutable disconnected : bool;
+  close_transport : unit -> unit;
 }
+
+let create ?(close = fun () -> ()) ~send_line () =
+  { send_line; queue = Queue.create (); mu = Mutex.create ();
+    tree = Model.create (); frames = Hashtbl.create 64;
+    capabilities = None; protocol_error = None; ready = false;
+    next_request = 0; pending = None; reply = None; disconnected = false;
+    close_transport = close }
+
+let mark_disconnected t =
+  Mutex.lock t.mu;
+  t.disconnected <- true;
+  Mutex.unlock t.mu
+
+let close t =
+  mark_disconnected t;
+  t.close_transport ()
 
 let enqueue t line =
   Mutex.lock t.mu;
@@ -27,29 +48,29 @@ let enqueue t line =
 let connect ~socket_path =
   let sock = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
   Unix.connect sock (Unix.ADDR_UNIX socket_path);
-  let oc = Unix.out_channel_of_descr sock in
+  let ic = Unix.in_channel_of_descr sock in
+  let oc = Unix.out_channel_of_descr (Unix.dup sock) in
+  let close () =
+    (try Unix.shutdown sock Unix.SHUTDOWN_ALL with Unix.Unix_error _ -> ());
+    close_out_noerr oc;
+    close_in_noerr ic
+  in
   let t =
-    {
-      send_line =
+    create ~close
+      ~send_line:
         (fun s ->
           output_string oc s;
           output_char oc '\n';
-          flush oc);
-      queue = Queue.create ();
-      mu = Mutex.create ();
-      tree = Model.create ();
-      frames = Hashtbl.create 64;
-    }
+          flush oc) ()
   in
   ignore
     (Thread.create
        (fun () ->
-          let ic = Unix.in_channel_of_descr sock in
           try
             while true do
               enqueue t (input_line ic)
             done
-          with _ -> ())
+          with _ -> mark_disconnected t)
        ());
   t
 
@@ -69,17 +90,20 @@ let listen_ws ~port =
   Unix.close srv;
   Unix.setsockopt conn Unix.TCP_NODELAY true;
   let ic = Unix.in_channel_of_descr conn
-  and oc = Unix.out_channel_of_descr conn in
+  and oc = Unix.out_channel_of_descr (Unix.dup conn) in
   if not (Ws.accept_handshake ic oc) then
     failwith "drive: bad websocket handshake";
+  let write_mu = Mutex.create () in
+  let write ?(opcode = 1) s =
+    Mutex.lock write_mu;
+    Fun.protect ~finally:(fun () -> Mutex.unlock write_mu)
+      (fun () -> Ws.write_frame oc ~opcode s)
+  in
   let t =
-    {
-      send_line = (fun s -> Ws.write_frame oc s);
-      queue = Queue.create ();
-      mu = Mutex.create ();
-      tree = Model.create ();
-      frames = Hashtbl.create 64;
-    }
+    create ~close:(fun () ->
+      (try Unix.shutdown conn Unix.SHUTDOWN_ALL with Unix.Unix_error _ -> ());
+      close_out_noerr oc;
+      close_in_noerr ic) ~send_line:(fun s -> write s) ()
   in
   ignore
     (Thread.create
@@ -107,13 +131,13 @@ let listen_ws ~port =
                 end;
                 loop ()
               | `Ping payload ->
-                Ws.write_frame oc ~opcode:10 payload;
+                write ~opcode:10 payload;
                 loop ()
               | `Pong | `Skip -> loop ()
-              | `Close | `Eof -> ()
+              | `Close | `Eof -> mark_disconnected t
             in
             loop ()
-          with _ -> ())
+          with _ -> mark_disconnected t)
        ());
   t
 
@@ -122,7 +146,23 @@ let listen_ws ~port =
    applies them through here. *)
 let ingest_line t line =
   let json = Yojson.Safe.from_string line in
-  match Yojson.Safe.Util.member "frames" json with
+  let member name = Yojson.Safe.Util.member name json in
+  match member "drive" with
+  | `String kind ->
+    if member "version" <> `Int 1 then
+      t.protocol_error <- Some "unsupported drive protocol version (expected 1)"
+    else if kind = "hello" then (
+      match member "capabilities" with
+      | `List xs when List.for_all (function `String _ -> true | _ -> false) xs ->
+        t.capabilities <- Some (List.map Yojson.Safe.Util.to_string xs)
+      | _ -> t.protocol_error <- Some "invalid host capabilities")
+    else if kind = "result" then (
+      match member "request", t.pending with
+      | `Int request, Some expected when request = expected -> t.reply <- Some json
+      | _ -> ())
+    else t.protocol_error <- Some ("unknown drive message: " ^ kind)
+  | `Null -> (
+  match member "frames" with
   | `List entries ->
     Hashtbl.reset t.frames;
     List.iter
@@ -138,7 +178,10 @@ let ingest_line t line =
           with _ -> ())
         | _ -> ())
       entries
-  | _ -> Model.apply_wire_batch t.tree json
+  | _ ->
+    Model.apply_wire_batch t.tree json;
+    if (match member "ops" with `List _ -> true | _ -> false) then t.ready <- true)
+  | _ -> t.protocol_error <- Some "invalid drive message"
 
 let drain t =
   Mutex.lock t.mu;
@@ -148,9 +191,83 @@ let drain t =
   List.iter (ingest_line t) lines;
   lines <> []
 
-let poll t = ignore (drain t)
+let poll t =
+  ignore (drain t);
+  if t.disconnected then failwith "drive: live host disconnected"
 
 let send t json = t.send_line (Yojson.Safe.to_string json)
+
+let await t ~timeout predicate =
+  let deadline = Unix.gettimeofday () +. timeout in
+  let rec loop () =
+    poll t;
+    match t.protocol_error with
+    | Some msg -> Error msg
+    | None ->
+      if predicate () then Ok ()
+      else if Unix.gettimeofday () >= deadline then Error "host completion timed out"
+      else (Unix.sleepf 0.005; loop ())
+  in
+  loop ()
+
+let native_request t ~timeout action =
+  let name, fields = Input.request action in
+  let context request msg =
+    Printf.sprintf "native %s request %d: %s" name request msg
+  in
+  poll t;
+  match t.protocol_error, t.capabilities with
+  | Some msg, _ -> Error msg
+  | None, None -> Error "native input requires a versioned host capability handshake; no semantic fallback"
+  | None, Some caps when not (List.mem name caps) ->
+    Error ("native host does not support: " ^ name)
+  | None, Some _ ->
+    t.next_request <- t.next_request + 1;
+    let request = t.next_request in
+    t.pending <- Some request;
+    t.reply <- None;
+    Fun.protect ~finally:(fun () -> t.pending <- None; t.reply <- None) (fun () ->
+      send t (`Assoc
+        ([ ("drive", `String "action"); ("version", `Int 1);
+           ("request", `Int request); ("action", `String name) ] @ fields));
+      match await t ~timeout (fun () -> Option.is_some t.reply) with
+      | Error msg ->
+        t.protocol_error <- Some (context request msg);
+        Error (context request msg)
+      | Ok () ->
+        match t.reply with
+        | None -> Error (context request "missing result")
+        | Some reply ->
+          let member key = Yojson.Safe.Util.member key reply in
+          match member "ok" with
+          | `Bool false ->
+            let msg = match member "error" with
+              | `String s -> s | _ -> "host rejected action without an error message"
+            in
+            Error (context request msg)
+          | `Bool true when action = Input.Screenshot -> (
+            match member "png" with
+            | `String data -> (
+              match Base64.decode data with
+              | Ok png when String.starts_with ~prefix:"\137PNG\r\n\026\n" png -> Ok (Input.Png png)
+              | _ -> Error (context request "invalid PNG screenshot"))
+            | _ -> Error (context request "missing PNG screenshot"))
+          | `Bool true -> Ok Input.Completed
+          | _ -> Error (context request "invalid completion result"))
+
+let native t ~timeout action =
+  if not (Float.is_finite timeout) || timeout <= 0.0 then
+    invalid_arg "drive: timeout must be a finite positive number";
+  let fail msg =
+    let name, _ = Input.request action in
+    let msg = Printf.sprintf "native %s request %d: %s" name t.next_request msg in
+    t.protocol_error <- Some msg;
+    Error msg
+  in
+  try native_request t ~timeout action with
+  | Failure msg | Sys_error msg | Yojson.Json_error msg -> fail msg
+  | Yojson.Safe.Util.Type_error (msg, _) -> fail ("invalid host message: " ^ msg)
+  | Unix.Unix_error (e, _, _) -> fail (Unix.error_message e)
 
 let send_nav t hash =
   send t (`Assoc [ ("event", `String "nav"); ("hash", `String hash) ])
@@ -168,6 +285,9 @@ let detail_fields (d : pointer_detail) =
   ; ("button", `Int d.button); ("target_class", `String d.target_class) ]
 
 let send_event t = function
+  | NavigatePrevious _ | NavigateNext _ | NavigationKey _ | ScrollEdges _
+  | VirtualWindow _ | PointerMove _ | PointerCancel _ | ToggleChangedDetail _ ->
+    failwith "drive: semantic event is not supported by the live bridge"
   | Press id -> send t (`Assoc (id_fields "press" id))
   | PressModifiers (id, modifiers) ->
     send t (`Assoc (id_fields "press-modifiers" id @ [ ("modifiers", `Int modifiers) ]))
@@ -240,12 +360,18 @@ let tap t ~x ~y =
 let frames_list t =
   Hashtbl.fold (fun id r acc -> (id, r) :: acc) t.frames []
 
-let driver t =
+let driver ?(timeout = 5.0) t =
+  if not (Float.is_finite timeout) || timeout <= 0.0 then
+    invalid_arg "drive: timeout must be a finite positive number";
+  (match await t ~timeout (fun () -> t.ready) with
+   | Ok () -> ()
+   | Error msg -> failwith ("drive: initial host snapshot: " ^ msg));
   {
     Session.tree = t.tree;
     send_event = (fun ev -> send_event t ev; poll t);
     poll = (fun () -> poll t);
     tap = (fun ~x ~y -> tap t ~x ~y);
     frames = (fun () -> frames_list t);
+    native = (fun action -> native t ~timeout action);
     send_nav = (fun h -> send_nav t h);
   }

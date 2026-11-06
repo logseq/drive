@@ -369,6 +369,8 @@ and selector_one s =
      | "kind" -> Some (Kind rest)
      | "ext" -> Some (Ext rest)
      | "text" -> Some (Text (unquote rest))
+     | "testid" -> Some (Prop ("accessibility-identifier", StringValue (unquote rest)))
+     | "label" -> Some (Prop ("label", StringValue (unquote rest)))
      | "prop" -> (
        match String.index_opt rest '=' with
        | Some j ->

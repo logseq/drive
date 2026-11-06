@@ -6,5 +6,5 @@
   (names drive_target)
   (flags -fPIC))
  (library_flags -cclib -ldl)
- (libraries lui yojson unix threads.posix)
- (modules model session scenario ffi live ws drive))
+ (libraries lui yojson base64 unix threads.posix)
+ (modules input model session scenario ffi live ws drive))

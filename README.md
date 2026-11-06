@@ -5,7 +5,7 @@ mount a real LUI app (view + reducer), replay the emitted patch ops into a
 queryable node tree, inject host events, and assert on the UI state. No
 platform host required; tests run in microseconds.
 
-Two ways to drive:
+Three ways to drive:
 
 - **In-process** (`Drive.Session`): mount an app against a recording
   backend inside your test suite. Events go through
@@ -15,6 +15,10 @@ Two ways to drive:
   loads, e.g. `libmeng_editor.so` built via `ocamlopt
   -output-complete-obj`). Patches stream back as wire JSON and are
   replayed into the same `Model`.
+- **Live** (`Drive.Live`): attach over Unix socket or WebSocket. Use
+  `--input semantic` (default) for injected LUI events, or `--input native`
+  for capability-checked, acknowledged host input. Native input never
+  falls back to semantic injection.
 
 ## Scenario scripts (`.drive`)
 
@@ -45,7 +49,8 @@ drive --lib ./libmeng_editor.so --os macos --host swiftui \
 ```
 
 `--os`/`--host` select the backend profile the target is told to use
-(any LUI profile — generic, macOS/SwiftUI, iOS). Failures print line
+(any LUI profile — generic, macOS/SwiftUI, iOS); they do not launch a
+simulator or implement native input. Failures print line
 numbers; exit code is non-zero on any failure.
 
 ## Library sketch
@@ -84,13 +89,14 @@ Event lines look like `{"event":"press","id":37}`,
 `{"event":"text","id":22,"value":"hi"}`,
 `{"event":"ext","id":24,"ident":"web-view","name":"navigate","fields":{"url":"..."}}`.
 Because the scenario drives the *live* process, the real UI visibly
-responds — this is the mode to use for recorded demos on macOS.
+responds, but semantic events do not exercise native hit testing,
+gesture recognition, or focus handling.
 
 ## Coordinate taps (`tap x y`)
 
-Selector events target a node id directly; `tap x y` instead resolves
-the node at a point — the closest thing to a real gesture recognizer
-firing. Hosts that support it interleave a frames snapshot on the same
+In semantic mode, selector events target a node id directly; `tap x y`
+instead resolves the node at a point in drive's model, not in the OS.
+Hosts that support it interleave a frames snapshot on the same
 socket:
 
     {"frames":[[id,x,y,w,h], ...]}   # window coords, top-left origin,
@@ -102,9 +108,12 @@ ancestors to the first `press-enabled` node or `button` (an
 emits a normal `press` for it. `tap <sel>` is shorthand for tapping the
 center of the node's reported frame — so `dump-frames` + `tap` needs no
 hand-picked coordinates. Works on any host that reports frames — SwiftUI
-and Flutter backends can stream them; anything DOM-based can use
-`elementFromPoint`-equivalent bookkeeping. In-process and FFI drivers
-reject `tap x y` and degrade `tap <sel>` to a plain press.
+and Flutter adapters can implement this contract. In-process and FFI
+drivers reject both tap forms. `tap <sel>` without a frame now fails;
+use `press <sel>` when semantic injection is intended.
+
+In native mode, both forms are sent to the host's input system. Selector
+clicks use fresh host geometry, not cached frame-based semantic dispatch.
 
 ## Web attach (`--ws-listen`)
 
@@ -120,8 +129,72 @@ same line protocol over a WebSocket — one text message per JSON line.
 `web/lui-drive.js` is the reference host adapter: elements tagged
 `data-lui-node-id`/`data-lui-kind` are reported as the node tree,
 `getBoundingClientRect()` feeds the frames snapshots, and incoming
-events are replayed as real DOM events (`press` → `el.click()`), so the
-page's own handlers run exactly as a user gesture would. Everything is
+events are injected synthetically (`press` → `el.click()`). This adapter
+advertises **no native capabilities**; it is not trusted browser input. Everything is
 gated on a live connection — without `?drive=` the file registers no
 observers, listeners, or timers, so it costs nothing on a page that
 isn't being driven. See `web/demo.html` for a runnable target.
+
+## Native Chromium input
+
+Requires Node.js 22+ and a Chromium instance exposing a **loopback-only**
+CDP HTTP endpoint. Launch an isolated browser profile, serve `web/` locally,
+and open `demo.html` without `?drive=`. Then, in separate terminals:
+
+```sh
+drive --ws-listen 9223 --input native scenario.drive
+node web/cdp-host.mjs --cdp http://127.0.0.1:9222 \
+  --url http://127.0.0.1:8000/demo.html --drive ws://127.0.0.1:9223
+```
+
+`--url` must identify exactly one open tab. Enable `data-lui-node-id` tagging
+in the application before attaching. The CDP adapter injects the shared
+snapshot reader; the page need not load `lui-drive.js` itself.
+
+The same `press`, `tap`, `type`, and `key` scenario commands now use
+`Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, and `Input.insertText`.
+`type` replaces the editable value through focus, Select All, and input,
+not assignment to `input.value`. Additional native commands:
+
+```text
+press testid:capture
+type testid:editor "hello"
+key "mod+a"
+scroll testid:list 0 300
+drag testid:source testid:target
+settle
+screenshot result.png
+```
+
+Actions resolve exactly one node; `testid:` maps to LUI's
+`accessibility-identifier`, and `label:` matches its exact label. For Web,
+test IDs come from `data-testid`, `data-lui-accessibility-identifier`, or
+the DOM `id`; labels come from `data-lui-label` or `aria-label`.
+Existence assertions still permit multiple matches.
+
+Chromium selector actions scroll into view, check enabled state and
+occlusion, and use actual browser input. The host waits for 100ms of
+DOM/geometry quiet and finite Web Animations (at most 2s), publishes the
+latest tree/frames, then acknowledges the action. This is **not** network
+idle or application-task completion: use `wait` for async business state.
+`--action-timeout SECONDS` controls the driver deadline (default 5s).
+Native scenarios stop at the first failure.
+
+| Host | Semantic input | Native input |
+|---|---|---|
+| In-process / FFI | Yes | No |
+| `web/lui-drive.js` | Synthetic DOM events | No |
+| `web/cdp-host.mjs` | No | Chromium mouse, text, keys, wheel, pointer drag, PNG |
+| Apple / Android / MyGo | Existing host-specific semantic attach | Requires a v1 native adapter |
+
+CDP currently targets tagged light DOM, not iframes or shadow roots.
+Drag is a pointer gesture, not a promised HTML5 drag-and-drop operation;
+both endpoints must fit in one viewport. Long press holds the primary
+mouse button for 600ms. Supported keys are letters, digits, Enter, Tab,
+Escape, Backspace, Delete, Space, arrows, Home/End and PageUp/PageDown;
+combine with `mod`, `cmd`/`meta`, `ctrl`, `alt` and `shift`. Use `type` for
+arbitrary text. Semantic-only commands (`ext`, `toggle`, `value`, `submit`,
+`dismiss`, `appear`, `change`, `goto`) explicitly fail in native mode.
+
+See [protocol and API migrations](docs/api-migrations.md) before updating
+a custom driver or implementing a native host.

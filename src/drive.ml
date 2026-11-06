@@ -5,6 +5,7 @@
    - Model: queryable node tree replayed from patch ops. *)
 
 module Model = Model
+module Input = Input
 module Session = Session
 module Scenario = Scenario
 module Ffi = Ffi

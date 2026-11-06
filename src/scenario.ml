@@ -82,45 +82,86 @@ let json_to_fields json_str =
 let wait_for (d : Session.driver) sel timeout =
   let deadline = Unix.gettimeofday () +. timeout in
   let rec loop () =
+    d.Session.poll ();
     if Model.exists d.Session.tree sel then ()
     else if Unix.gettimeofday () > deadline then
       raise (Script_error "timeout")
     else begin
-      d.Session.poll ();
-      if Model.exists d.Session.tree sel then ()
-      else begin
-        Unix.sleepf 0.02;
-        loop ()
-      end
+      Unix.sleepf 0.02;
+      loop ()
     end
   in
   loop ()
 
-(* `tap <sel>` prefers the node's reported frame center, so scripts
-   verify real geometry instead of just event routing; without frames
-   (in-process/ffi drivers) it degrades to a plain press. *)
+(* Legacy geometry-assisted semantic dispatch still requires a frame. *)
 let tap_selector d fail sel =
   let n = node d (selector sel) in
   d.Session.poll ();
   match List.assoc_opt n.Model.id (d.Session.frames ()) with
   | Some (r : Model.rect) -> (
+    if r.rw <= 0.0 || r.rh <= 0.0 then raise (Script_error "target has no visible frame");
     let x = r.Model.rx +. (r.Model.rw /. 2.0) in
     let y = r.Model.ry +. (r.Model.rh /. 2.0) in
     match d.Session.tap ~x ~y with
     | Ok _ -> []
     | Error msg -> fail msg)
   | None ->
-    d.Session.send_event (Press n.Model.id);
-    []
+    fail "tap requires a host-reported target frame; use press for semantic injection"
 
-let run_line ~emit (d : Session.driver) lineno line =
+let native_line (d : Session.driver) ts =
+  let id sel = (node d (selector sel)).Model.id in
+  let perform action =
+    match d.native action with
+    | Ok Input.Completed -> ()
+    | Ok (Input.Png _) -> raise (Script_error "unexpected screenshot response")
+    | Error msg -> raise (Script_error msg)
+  in
+  let coordinate s =
+    let n = float_of_string s in
+    if not (Float.is_finite n) then raise (Script_error "coordinates must be finite");
+    n
+  in
+  let action =
+    match ts with
+    | [ ("press" | "tap"); sel ] -> Some (Input.Click (id sel))
+    | [ ("tap" | "tap-at"); x; y ] -> Some (Input.Tap (coordinate x, coordinate y))
+    | [ "double-press"; sel ] -> Some (Input.Double_click (id sel))
+    | [ "long-press"; sel ] -> Some (Input.Long_click (id sel))
+    | "type" :: sel :: text -> Some (Input.Type_text (id sel, String.concat " " text))
+    | [ "key"; combo ] -> Some (Input.Key combo)
+    | [ "scroll"; sel; dx; dy ] -> Some (Input.Scroll (id sel, coordinate dx, coordinate dy))
+    | [ "drag"; source; target ] -> Some (Input.Drag (id source, id target))
+    | [ "settle" ] -> Some Input.Settle
+    | _ -> None
+  in
+  match action, ts with
+  | Some a, _ -> perform a; true
+  | None, [ "screenshot"; path ] ->
+    (match d.native Input.Screenshot with
+     | Ok (Input.Png png) ->
+       let oc = open_out_bin path in
+       Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc png)
+     | Ok Input.Completed -> raise (Script_error "missing screenshot response")
+     | Error msg -> raise (Script_error msg));
+    true
+  | None, _ -> false
+
+let run_line ?(input = Input.Semantic) ~emit (d : Session.driver) lineno line =
   let line = String.trim line in
   if line = "" || line.[0] = '#' then []
   else
     let ts = tokens line in
     let fail msg = [ { line = lineno; message = msg } ] in
     try
-      match ts with
+      if input = Input.Native && native_line d ts then []
+      else match ts with
+      | cmd :: _ when input = Input.Native &&
+          List.mem cmd [ "press"; "tap"; "tap-at"; "type"; "key"; "long-press";
+            "double-press"; "ext"; "change"; "submit"; "dismiss"; "appear";
+            "toggle"; "value"; "goto"; "scroll"; "drag"; "screenshot"; "settle" ] ->
+        fail ("unsupported native command or arguments: " ^ cmd ^ "; no semantic fallback")
+      | ("scroll" | "drag" | "screenshot" | "settle") :: _ ->
+        fail "this command requires native input mode"
       | ("tap" | "tap-at") :: xs :: ys :: _ -> (
         match (float_of_string_opt xs, float_of_string_opt ys) with
         | Some x, Some y -> (
@@ -150,15 +191,17 @@ let run_line ~emit (d : Session.driver) lineno line =
         d.Session.send_event (TextChanged (n.id, String.concat " " rest));
         []
       | "key" :: combo :: _ ->
+        d.Session.poll ();
         let surface =
-          match Model.first d.Session.tree (Ext "key-surface") with
-          | Some n -> n
+          match Model.find d.Session.tree (Ext "key-surface") with
+          | [ n ] -> n
           (* live web attach has no key-surface node; id 0 is the
              adapter's document-level fallback (a real DOM keydown
              that reaches capture listeners on document) *)
-          | None ->
+          | [] ->
             { Model.id = 0; kind = ""; props = Hashtbl.create 0
             ; children = []; parent = None }
+          | _ -> node d (Ext "key-surface")
         in
         let parts = String.split_on_char '+' combo in
         let mods, key =
@@ -262,11 +305,16 @@ let run_line ~emit (d : Session.driver) lineno line =
     | Failure msg -> fail msg
     | e -> fail (Printexc.to_string e)
 
-let run ?(emit = print_endline) (d : Session.driver) source =
-  let failures =
-    String.split_on_char '\n' source
-    |> List.mapi (fun i line -> (i + 1, line))
-    |> List.concat_map (fun (i, line) -> run_line ~emit d i line)
+let run ?(emit = print_endline) ?(input = Input.Semantic) (d : Session.driver) source =
+  let rec lines lineno acc = function
+    | [] -> List.rev acc
+    | line :: rest ->
+      let failures = run_line ~input ~emit d lineno line in
+      if input = Input.Native && failures <> [] then List.rev_append acc failures
+      else lines (lineno + 1) (List.rev_append failures acc) rest
   in
-  d.Session.poll ();
+  let failures =
+    lines 1 [] (String.split_on_char '\n' source)
+  in
+  if failures = [] then d.Session.poll ();
   failures

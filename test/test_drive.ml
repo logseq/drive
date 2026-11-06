@@ -181,17 +181,12 @@ let test_hit_overlap_and_stale () =
 let live_stub () =
   let a, b = Unix.socketpair Unix.PF_UNIX Unix.SOCK_STREAM 0 in
   let oc = Unix.out_channel_of_descr a in
-  ( {
-      Live.send_line =
+  ( Live.create
+      ~send_line:
         (fun s ->
           output_string oc s;
           output_char oc '\n';
-          flush oc);
-      queue = Queue.create ();
-      mu = Mutex.create ();
-      tree = Model.create ();
-      frames = Hashtbl.create 8;
-    },
+          flush oc) (),
     b )
 
 let test_live_frames_ingest () =
@@ -235,6 +230,47 @@ let test_live_tap_miss () =
     Alcotest.(check string) "no frames"
       "no frames reported — is the host's frame reporting on?" msg
 
+let test_native_completion_contract () =
+  List.iter
+    (fun (case, handshake, response, succeeds) ->
+      let host = ref None in
+      let requests = ref 0 in
+      let t = Live.create ~send_line:(fun line ->
+        incr requests;
+        let json = Yojson.Safe.from_string line in
+        let field name = Yojson.Safe.Util.member name json in
+        Alcotest.(check string) "only native protocol emitted" "action"
+          (Yojson.Safe.Util.to_string (field "drive"));
+        match !host with
+        | None -> Alcotest.fail "host not initialized"
+        | Some t ->
+          if response = "disconnect" then Live.mark_disconnected t
+          else begin
+            let request = Yojson.Safe.Util.to_int (field "request") in
+            let request = if response = "wrong-id" then request + 1 else request in
+            Live.enqueue t (Yojson.Safe.to_string (`Assoc [
+              "drive", `String "result"; "version", `Int 1; "request", `Int request;
+              "ok", `Bool (response <> "error"); "error", `String "blocked by host" ]))
+          end) ()
+      in
+      host := Some t;
+      Option.iter (Live.ingest_line t) handshake;
+      let result = Live.native t ~timeout:0.01 (Input.Click 2) in
+      Alcotest.(check bool) case succeeds (Result.is_ok result);
+      if handshake = None then
+        Alcotest.(check int) "missing capability cannot dispatch" 0 !requests;
+      if response = "error" then match result with
+        | Error msg -> Alcotest.(check string) "action/request context"
+            "native click request 1: blocked by host" msg
+        | Ok _ -> Alcotest.fail "expected rejection")
+    (let hello = Some {|{"drive":"hello","version":1,"capabilities":["click"]}|} in
+     [ "matching completion", hello, "ok", true;
+       "host rejection", hello, "error", false;
+       "unrelated completion cannot succeed", hello, "wrong-id", false;
+       "disconnect is an error result", hello, "disconnect", false;
+       "legacy host cannot inject native input", None, "ok", false;
+       "incompatible version", Some {|{"drive":"hello","version":2,"capabilities":["click"]}|}, "ok", false ])
+
 (* ---------- scenario DSL ---------- *)
 
 let test_scenario_pass () =
@@ -265,6 +301,19 @@ let test_scenario_fails () =
     Scenario.run (Session.driver s) "expect kind:nonexistent-widget\n"
   in
   Alcotest.(check int) "one failure" 1 (List.length failures)
+
+let test_action_target_contract () =
+  List.iter
+    (fun command ->
+      let s = mount_demo () in
+      Fun.protect ~finally:(fun () -> Session.dispose s) (fun () ->
+        let failures = Scenario.run (Session.driver s) command in
+        Alcotest.(check bool) "invalid action fails" true (failures <> []);
+        Alcotest.(check int) "no counter mutation" 0
+          (Session.read_model s).Demo_app.count;
+        Alcotest.(check bool) "no dialog mutation" false
+          (Session.read_model s).Demo_app.dialog_open))
+    [ "press kind:button"; "tap kind:button&text:Increment" ]
 
 let test_scenario_tap_needs_live () =
   let s = mount_demo () in
@@ -359,6 +408,8 @@ let () =
         [
           Alcotest.test_case "passing script" `Quick test_scenario_pass;
           Alcotest.test_case "failing script" `Quick test_scenario_fails;
+          Alcotest.test_case "actions require an unambiguous executable target" `Quick
+            test_action_target_contract;
           Alcotest.test_case "coordinate tap needs live" `Quick
             test_scenario_tap_needs_live;
         ] );
@@ -376,6 +427,7 @@ let () =
             test_live_frames_ingest;
           Alcotest.test_case "tap miss / no frames" `Quick
             test_live_tap_miss;
+          Alcotest.test_case "native completion contract" `Quick test_native_completion_contract;
         ] );
       ( "ws",
         [

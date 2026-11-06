@@ -5,17 +5,15 @@
 
 open Lui_protocol
 
-(* Minimal driver surface shared by the in-process session and the FFI
-   target: scenarios only need these. [tap] injects a coordinate-space
-   press resolved against host-reported frames — only live attach has
-   them; other drivers report an error. [frames] exposes the latest
-   reported frames for `dump-frames`. *)
+(* [tap] is legacy geometry-assisted semantic dispatch. [native] is a
+   separate capability-checked, acknowledged host input path. *)
 type driver = {
   tree : Model.t;
   send_event : event -> unit;
   poll : unit -> unit;
   tap : x:float -> y:float -> (int, string) result;
   frames : unit -> (int * Model.rect) list;
+  native : Input.action -> (Input.output, string) result;
   (* live attach only: ask the host page to navigate (location.hash).
      In-process drivers have no location; this is a no-op there. *)
   send_nav : string -> unit;
@@ -81,6 +79,7 @@ let driver s =
     poll = (fun () -> poll s);
     tap = tap_unsupported;
     frames = no_frames;
+    native = Input.unsupported;
     send_nav = (fun _ -> ());
   }
 
@@ -88,8 +87,14 @@ let dispose s = ignore (Lui_app.dispose s.app)
 
 (* Resolve a selector to a single node, erroring with a tree dump. *)
 let resolve (d : driver) sel =
-  match Model.first d.tree sel with
-  | Some n -> n
-  | None ->
+  d.poll ();
+  match Model.find d.tree sel with
+  | [ n ] -> n
+  | [] ->
     failwith
       (Printf.sprintf "drive: no node matches selector; tree:\n%s" (Model.dump d.tree))
+  | ns ->
+    failwith
+      (Printf.sprintf "drive: ambiguous selector (%d matches: %s); refine it with testid: or &"
+         (List.length ns)
+         (String.concat ", " (List.map (fun n -> "#" ^ string_of_int n.Model.id) ns)))

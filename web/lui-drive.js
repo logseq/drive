@@ -41,12 +41,15 @@ const LuiDrive = (() => {
     return v === "" || v === "true";
   }
 
-  // Emit the node's tree as one wire batch (create/set-prop/insert-child).
-  function sendTree() {
+  // Shared DOM snapshot for semantic WebSocket and native CDP hosts.
+  function snapshot() {
     const ops = [];
     const seen = new Set();
-    const visit = (el) => {
-      const id = parseInt(el.dataset.luiNodeId, 10);
+    const nodes = [...allNodes()];
+    for (const el of nodes) {
+      const id = Number(el.dataset.luiNodeId);
+      if (!Number.isSafeInteger(id) || seen.has(id))
+        throw new Error(`invalid or duplicate data-lui-node-id: ${el.dataset.luiNodeId}`);
       seen.add(id);
       // data-lui-kind wins (backends report e.g. "lui-button"); fall
       // back to a lui-* class or the tag name.
@@ -54,7 +57,7 @@ const LuiDrive = (() => {
         (el.dataset.luiKind || "")
           .split(/\s+/)[0]
           .replace(/^lui-/, "") ||
-        ((el.className.match(/\blui-(\S+)/) || [])[1] ||
+        (((el.getAttribute("class") || "").match(/\blui-(\S+)/) || [])[1] ||
           el.tagName.toLowerCase());
       ops.push({ op: "create-node", id, kind });
       const setProp = (property, value) =>
@@ -65,35 +68,44 @@ const LuiDrive = (() => {
       // scenarios can assert DOM structure the way in-process tests
       // assert extension props.
       if (el.id) setProp("id", el.id);
+      const testid = el.dataset.testid ?? el.dataset.luiAccessibilityIdentifier ?? el.id;
+      if (testid) setProp("accessibility-identifier", testid);
+      const label = el.dataset.luiLabel ?? el.getAttribute("aria-label");
+      if (label) setProp("label", label);
       const cls = el.getAttribute("class");
       if (cls) setProp("class", cls);
       const pe = boolAttr(el, "data-lui-press-enabled");
       if (pe !== null) setProp("press-enabled", pe);
       const en = boolAttr(el, "data-lui-enabled");
-      if (en !== null) setProp("enabled", en);
+      if (en !== null || el.matches(":disabled"))
+        setProp("enabled", en !== false && !el.matches(":disabled"));
+    }
+    const children = new Map();
+    for (const el of nodes) {
+      const id = Number(el.dataset.luiNodeId);
       const parent = el.parentElement?.closest("[data-lui-node-id]");
       if (parent) {
-        const siblings = [...parent.children].filter((c) =>
-          c.hasAttribute("data-lui-node-id")
-        );
+        const index = children.get(parent) || 0;
+        children.set(parent, index + 1);
         ops.push({
           op: "insert-child",
           parent: parseInt(parent.dataset.luiNodeId, 10),
           child: id,
-          index: siblings.indexOf(el),
+          index,
         });
       }
-      for (const child of el.children) {
-        if (child.hasAttribute("data-lui-node-id")) visit(child);
-      }
-    };
-    for (const el of allNodes()) {
-      if (!el.parentElement?.closest("[data-lui-node-id]")) visit(el);
     }
-    for (const id of lastIds) {
-      if (!seen.has(id)) ops.push({ op: "drop-node", id });
-    }
+    const dropped = [...lastIds].filter(id => !seen.has(id));
     lastIds = seen;
+    const frames = nodes.map((el) => {
+      const r = el.getBoundingClientRect();
+      return [Number(el.dataset.luiNodeId), r.x, r.y, r.width, r.height];
+    });
+    return { ops: dropped.map(id => ({ op: "drop-node", id })).concat(ops), frames };
+  }
+
+  function sendTree() {
+    const { ops } = snapshot();
     ws.send(JSON.stringify({ ops }));
   }
 
@@ -137,8 +149,7 @@ const LuiDrive = (() => {
     );
   }
 
-  // drive -> host event dispatch: replay as a real DOM event so the
-  // page's own handlers run exactly as a user gesture would.
+  // Semantic injection only: these synthetic DOM events are not trusted input.
   function dispatchEvent(msg) {
     // key-surface ext events carry {key, mods}; id 0 (no key-surface
     // node in the tree) means a document-level keydown that reaches
@@ -206,6 +217,7 @@ const LuiDrive = (() => {
       ws = null;
     };
     ws.onopen = () => {
+      ws.send(JSON.stringify({ drive: "hello", version: 1, capabilities: [] }));
       sendTree();
       sendFrames();
       observer = new MutationObserver(() => {
@@ -224,6 +236,11 @@ const LuiDrive = (() => {
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data);
+        if (msg.drive === "action") {
+          ws.send(JSON.stringify({ drive: "result", version: 1,
+            request: msg.request, ok: false, error: "semantic DOM adapter has no native input capabilities" }));
+          return;
+        }
         if (msg.event === "nav") dispatchNav(msg);
         else dispatchEvent(msg);
       } catch (_) {}
@@ -240,7 +257,7 @@ const LuiDrive = (() => {
   const auto = new URLSearchParams(location.search).get("drive");
   if (auto) attach(auto);
 
-  return { attach, sendFrames: scheduleFrames };
+  return { attach, snapshot, sendFrames: scheduleFrames };
 })();
 
 if (typeof window !== "undefined") window.LuiDrive = LuiDrive;
