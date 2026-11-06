@@ -9,7 +9,7 @@
 let usage =
   "usage: drive (--lib <path> [--os macos|ios|android|linux|windows|generic] \\\n\
   \        [--host swiftui|web|kotlin|generic] \\\n\
-  \        [--env NAME=VALUE]... | --socket <path> | --ws-listen <port>) \\\n\
+  \        [--env NAME=VALUE]... | --socket <path> | --tcp <host:port> | --ws-listen <port>) \\\n\
   \        <scenario.drive>"
 
 let main () =
@@ -18,6 +18,7 @@ let main () =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
   let lib = ref "" in
   let socket = ref "" in
+  let tcp = ref "" in
   let ws_listen = ref 0 in
   let os = ref "generic" in
   let host = ref "generic" in
@@ -33,6 +34,7 @@ let main () =
     [
       ("--lib", Arg.Set_string lib, "shared library exporting lui_ocaml_* ABI");
       ("--socket", Arg.Set_string socket, "attach to a live app's MENG_DRIVE_SOCKET");
+      ("--tcp", Arg.Set_string tcp, "HOST:PORT  attach to a loopback native host (e.g. 127.0.0.1:49377)");
       ( "--ws-listen",
         Arg.Set_int ws_listen,
         "PORT  accept a WebSocket host attach (web: page dials out to drive)" );
@@ -45,13 +47,13 @@ let main () =
       ("--env", Arg.String (fun kv -> env := kv :: !env), "NAME=VALUE for the target process env");
     ]
     anon usage;
-  let targets = List.filter Fun.id [ !lib <> ""; !socket <> ""; !ws_listen <> 0 ] in
+  let targets = List.filter Fun.id [ !lib <> ""; !socket <> ""; !tcp <> ""; !ws_listen <> 0 ] in
   if List.length targets <> 1 || !scenario = "" then begin
     prerr_endline usage;
     exit 2
   end;
   if !input = Drive.Input.Native && !lib <> "" then
-    failwith "drive: native input requires --socket or --ws-listen; FFI only supports semantic injection";
+    failwith "drive: native input requires --socket, --tcp or --ws-listen; FFI only supports semantic injection";
   if not (Float.is_finite !timeout) || !timeout <= 0.0 then
     failwith "drive: --action-timeout must be a finite positive number";
   List.iter
@@ -96,6 +98,22 @@ let main () =
             (Unix.error_message e);
           exit 2
       in
+      (Drive.Live.driver ~timeout:!timeout live, fun () -> Drive.Live.close live)
+    else if !tcp <> "" then
+      let host, port =
+        match String.rindex_opt !tcp ':' with
+        | Some colon ->
+          let host = String.sub !tcp 0 colon in
+          let host = if host = "[::1]" then "::1" else host in
+          let port =
+            String.sub !tcp (colon + 1) (String.length !tcp - colon - 1)
+          in
+          (match int_of_string_opt port with
+          | Some port -> host, port
+          | None -> failwith "drive: --tcp expects a loopback HOST:PORT")
+        | None -> failwith "drive: --tcp expects a loopback HOST:PORT"
+      in
+      let live = Drive.Live.connect_tcp ~host ~port in
       (Drive.Live.driver ~timeout:!timeout live, fun () -> Drive.Live.close live)
     else if !ws_listen <> 0 then
       let live =

@@ -1,5 +1,35 @@
 # API and wire migrations
 
+## Loopback TCP native host attach
+
+`Live.connect_tcp ~host ~port` and `drive --tcp HOST:PORT` add an optional
+newline-delimited TCP transport for native test hosts and device port forwards.
+The wire protocol and capability requirements remain v1; existing Unix socket,
+WebSocket and semantic/FFI integrations do not change.
+
+Only `127.0.0.1`, `localhost` (without DNS, mapped to IPv4 loopback), and `::1`
+are accepted by the library. Use `[::1]:PORT` at the CLI. Ports must be in
+1..65535. Other hosts are rejected before connecting. Hosts must independently
+bind loopback and opt in to test control; do not ship an auto-starting listener.
+
+```ocaml
+let live = Drive.Live.connect_tcp ~host:"127.0.0.1" ~port:49377 in
+Fun.protect ~finally:(fun () -> Drive.Live.close live) (fun () ->
+  let driver = Drive.Live.driver ~timeout:5.0 live in
+  Drive.Scenario.run ~input:Drive.Input.Native driver source)
+```
+
+```sh
+# With a compatible Android test host already running:
+adb -s "$DEVICE" forward tcp:49377 tcp:49377
+drive --tcp 127.0.0.1:49377 --input native smoke.drive
+adb -s "$DEVICE" forward --remove tcp:49377
+```
+
+TCP is mutually exclusive with the other CLI transports. It does not launch
+an app, simulator, emulator, test IME or native input adapter, and never changes
+the default semantic mode. Unsupported native actions still fail explicitly.
+
 ## Explicit input modes and native host protocol v1
 
 The default remains `Drive.Input.Semantic`. Existing in-process, FFI, and

@@ -15,7 +15,7 @@ Three ways to drive:
   loads, e.g. `libmeng_editor.so` built via `ocamlopt
   -output-complete-obj`). Patches stream back as wire JSON and are
   replayed into the same `Model`.
-- **Live** (`Drive.Live`): attach over Unix socket or WebSocket. Use
+- **Live** (`Drive.Live`): attach over Unix socket, loopback TCP or WebSocket. Use
   `--input semantic` (default) for injected LUI events, or `--input native`
   for capability-checked, acknowledged host input. Native input never
   falls back to semantic injection.
@@ -91,6 +91,29 @@ Event lines look like `{"event":"press","id":37}`,
 Because the scenario drives the *live* process, the real UI visibly
 responds, but semantic events do not exercise native hit testing,
 gesture recognition, or focus handling.
+
+## Loopback TCP attach (`--tcp`)
+
+Native test hosts can expose the same newline-delimited JSON protocol on a
+loopback TCP listener. This also works across an explicit device port forward:
+
+```sh
+adb -s "$DEVICE" forward tcp:49377 tcp:49377
+drive --tcp 127.0.0.1:49377 --input native scenario.drive
+adb -s "$DEVICE" forward --remove tcp:49377
+```
+
+Start a compatible test host on the device first; port forwarding alone does
+not provide native input. `--tcp` accepts only `127.0.0.1`, `localhost`
+(mapped directly to IPv4 loopback), or `[::1]`, with a port from 1 to 65535.
+No DNS lookup or external interface is allowed. It is mutually exclusive with
+`--lib`, `--socket` and `--ws-listen`. There is no reconnect/retry: a timed-out
+action may already have run. Close the host and start a new test session.
+
+Embedding callers use `Drive.Live.connect_tcp ~host:"127.0.0.1" ~port:49377`,
+then `Drive.Live.driver ~timeout:5.0` and `Drive.Live.close`, just as for Unix
+socket attach. No native capability is implied by the transport: the host's
+v1 handshake remains mandatory.
 
 ## Coordinate taps (`tap x y`)
 

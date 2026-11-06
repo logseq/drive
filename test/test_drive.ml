@@ -388,6 +388,18 @@ let test_ws_frame_codec () =
   Unix.close r;
   Unix.close w
 
+let test_tcp_loopback_admission () =
+  List.iter
+    (fun (host, port) ->
+      match Live.connect_tcp ~host ~port with
+      | live ->
+        Live.close live;
+        Alcotest.fail "unsafe TCP endpoint accepted"
+      | exception Invalid_argument _ -> ())
+    [ ("0.0.0.0", 49377); ("192.0.2.1", 49377); ("::", 49377);
+      ("example.com", 49377); ("127.0.0.1.example.com", 49377);
+      ("127.0.0.1", 0); ("localhost", -1); ("::1", 65536) ]
+
 let () =
   Alcotest.run "drive"
     [
@@ -428,6 +440,7 @@ let () =
           Alcotest.test_case "tap miss / no frames" `Quick
             test_live_tap_miss;
           Alcotest.test_case "native completion contract" `Quick test_native_completion_contract;
+          Alcotest.test_case "TCP attach is loopback-only" `Quick test_tcp_loopback_admission;
         ] );
       ( "ws",
         [
