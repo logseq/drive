@@ -77,7 +77,8 @@ let send t name node a b c iv fv =
 
 let send_event t = function
   | NavigatePrevious _ | NavigateNext _ | NavigationKey _ | ScrollEdges _
-  | VirtualWindow _ | PointerMove _ | PointerCancel _ | ToggleChangedDetail _ ->
+  | VirtualWindow _ | PointerMove _ | PointerCancel _ | ToggleChangedDetail _
+  | FocusWithinChanged _ ->
     failwith "drive: semantic event is not supported by the FFI bridge"
   | Press n -> send t "press" (Int64.of_int n) "" "" "" 0 0.0
   | LongPress n -> send t "long_press" (Int64.of_int n) "" "" "" 0 0.0
