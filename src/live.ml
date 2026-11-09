@@ -357,7 +357,8 @@ let detail_fields (d : pointer_detail) =
 
 let send_event t = function
   | NavigatePrevious _ | NavigateNext _ | NavigationKey _ | ScrollEdges _
-  | VirtualWindow _ | PointerMove _ | PointerCancel _ | ToggleChangedDetail _ ->
+  | VirtualWindow _ | PointerMove _ | PointerCancel _ | ToggleChangedDetail _
+  | FocusWithinChanged _ ->
     failwith "drive: semantic event is not supported by the live bridge"
   | Press id -> send t (`Assoc (id_fields "press" id))
   | PressModifiers (id, modifiers) ->
